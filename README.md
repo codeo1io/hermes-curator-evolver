@@ -142,6 +142,7 @@ The default experience is designed to be inspectable before it is writable:
 - **No blind model dependency:** the default bootstrap path is model-free; model-assisted proposal drafting and semantic/rerank ordering require explicit opt-in flags.
 - **Narrow unattended writes:** low-risk autorun writes only a managed bounded notes block, and only after both `--apply-low-risk` and `--approve-auto-apply`.
 - **Size guardrails:** `SKILL.md` updates target a 90k soft cap, spill bulky evidence into `references/`, and skip unattended writes when the target skill is already over the 100k hard cap.
+- **Channel auto-load guard:** skills referenced by Hermes `channel_skill_bindings` are treated as high-blast-radius prompts. Autorun protects them from unattended writes by default and enforces a 12k budget even when explicitly allowlisted, so Slack-bound router skills do not grow into context-exhausting umbrellas.
 - **Source provenance gate:** official/bundled, hub-installed, plugin-provided, `skills.external_dirs`, pinned, and unknown-source skills are skipped from unattended writes.
 - **Rollback is concrete:** guarded apply records backups and manifests so you can restore exact prior content.
 

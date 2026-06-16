@@ -50,7 +50,7 @@ def test_backfill_sessions_imports_tool_turn_and_session_events(tmp_path):
     _write_session(sessions_dir / "session_20260501_100000_test.json")
     store = EvidenceStore(tmp_path / "evidence.sqlite")
 
-    result = backfill_sessions(sessions_dir=sessions_dir, store=store, days=30)
+    result = backfill_sessions(sessions_dir=sessions_dir, store=store, days=365)
 
     assert result["sessions_seen"] == 1
     assert result["sessions_imported"] == 1
@@ -70,8 +70,8 @@ def test_backfill_sessions_is_idempotent_for_same_session_file(tmp_path):
     _write_session(sessions_dir / "session_20260501_100000_test.json")
     store = EvidenceStore(tmp_path / "evidence.sqlite")
 
-    first = backfill_sessions(sessions_dir=sessions_dir, store=store, days=30)
-    second = backfill_sessions(sessions_dir=sessions_dir, store=store, days=30)
+    first = backfill_sessions(sessions_dir=sessions_dir, store=store, days=365)
+    second = backfill_sessions(sessions_dir=sessions_dir, store=store, days=365)
 
     assert first["tool_events_imported"] == 1
     assert second["tool_events_imported"] == 0

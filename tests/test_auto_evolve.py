@@ -5,6 +5,7 @@ import hermes_curator_evolver.auto_evolve as auto_evolve
 from hermes_curator_evolver.auto_evolve import (
     AutoEvolveConfig,
     build_low_risk_skill_update,
+    discover_channel_bound_skills,
     discover_skill_files,
     generate_variants,
     install_auto_timer,
@@ -33,6 +34,119 @@ def test_discover_skill_files_uses_frontmatter_name(tmp_path):
     discovered = discover_skill_files(skills)
 
     assert discovered["hermes-agent"] == skill_file
+
+
+def test_discover_channel_bound_skills_reads_hermes_config_aliases(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+slack:
+  channel_skill_bindings:
+    - id: C123
+      skills:
+        - angi-edge-store-operations
+        - service/business-zero-ai-event-triage
+""".strip(),
+        encoding="utf-8",
+    )
+
+    discovered = discover_channel_bound_skills(config)
+
+    assert "angi-edge-store-operations" in discovered
+    assert "service/business-zero-ai-event-triage" in discovered
+    assert "business-zero-ai-event-triage" in discovered
+
+
+def test_auto_evolve_protects_channel_bound_skills_from_auto_apply(tmp_path):
+    db = tmp_path / "evidence.sqlite"
+    store = EvidenceStore(db)
+    skills = tmp_path / "skills"
+    backups = tmp_path / "backups"
+    config = tmp_path / "config.yaml"
+    skill_file = _write_skill(skills, "store-playbook")
+    original_hash = sha256_file(skill_file)
+    config.write_text(
+        """
+slack:
+  channel_skill_bindings:
+    - id: C123
+      skills:
+        - store-playbook
+""".strip(),
+        encoding="utf-8",
+    )
+    store.record_tool_call(
+        tool_name="skill_view",
+        args={"name": "store-playbook"},
+        result={"success": True},
+        session_id="s1",
+    )
+
+    result = run_auto_evolve(
+        AutoEvolveConfig(
+            db_path=db,
+            skills_dir=skills,
+            backup_dir=backups,
+            hermes_config_path=config,
+            days=30,
+            min_evidence=1,
+            apply_low_risk=True,
+            approve_auto_apply=True,
+        )
+    )
+
+    candidate = result["candidates"][0]
+    assert result["summary"]["applied"] == 0
+    assert candidate["channel_bound"] is True
+    assert candidate["status"] == "skipped"
+    assert candidate["reason"] == "channel-bound-skill-auto-apply-protected"
+    assert sha256_file(skill_file) == original_hash
+
+
+def test_auto_evolve_enforces_size_budget_even_when_channel_bound_skill_is_allowlisted(tmp_path):
+    db = tmp_path / "evidence.sqlite"
+    store = EvidenceStore(db)
+    skills = tmp_path / "skills"
+    backups = tmp_path / "backups"
+    config = tmp_path / "config.yaml"
+    skill_file = _write_skill(skills, "store-playbook", "A" * 12_500)
+    original_hash = sha256_file(skill_file)
+    config.write_text(
+        """
+slack:
+  channel_skill_bindings:
+    - id: C123
+      skills:
+        - store-playbook
+""".strip(),
+        encoding="utf-8",
+    )
+    store.record_tool_call(
+        tool_name="skill_view",
+        args={"name": "store-playbook"},
+        result={"success": True},
+        session_id="s1",
+    )
+
+    result = run_auto_evolve(
+        AutoEvolveConfig(
+            db_path=db,
+            skills_dir=skills,
+            backup_dir=backups,
+            hermes_config_path=config,
+            days=30,
+            min_evidence=1,
+            apply_low_risk=True,
+            approve_auto_apply=True,
+            auto_apply_allowlist=("store-playbook",),
+        )
+    )
+
+    candidate = result["candidates"][0]
+    assert result["summary"]["applied"] == 0
+    assert candidate["reason"] == "channel-bound-skill-over-size-budget"
+    assert candidate["content_size"]["current_chars"] > candidate["content_size"]["auto_loaded_skill_max_chars"]
+    assert sha256_file(skill_file) == original_hash
 
 
 def test_low_risk_update_preserves_existing_skill_and_appends_managed_block(tmp_path):

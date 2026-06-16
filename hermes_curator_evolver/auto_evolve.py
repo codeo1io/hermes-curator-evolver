@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .guarded_apply import (
     apply_guarded_patch,
     register_support_file_in_manifest,
@@ -45,6 +47,7 @@ _NAME_RE = re.compile(r"^name:\s*[\"']?(?P<name>[^\"'\n]+)[\"']?\s*$", re.MULTIL
 _PIN_RE = re.compile(r"^(?:pin|pinned):\s*(?:true|yes|1)\s*$", re.IGNORECASE | re.MULTILINE)
 _MAX_SKILL_CONTENT_CHARS = 100_000
 _SOFT_SKILL_CONTENT_CHARS = 90_000
+_AUTO_LOADED_SKILL_MAX_CHARS = 12_000
 
 # Skills in these families steer Hermes itself, coding workflow, skill loading,
 # or repo/PR operations. They may still be analyzed and proposed, but unattended
@@ -103,6 +106,9 @@ class AutoEvolveConfig:
     variants: int = 1
     require_restore_drill: bool = False
     restore_drill_state_path: str | Path | None = None
+    hermes_config_path: str | Path | None = None
+    protect_channel_bound_skills: bool = True
+    auto_loaded_skill_max_chars: int = _AUTO_LOADED_SKILL_MAX_CHARS
 
 
 @dataclass(frozen=True)
@@ -146,6 +152,10 @@ _GUIDANCE_BULLETS: dict[str, tuple[str, ...]] = {
 
 def _default_skills_dir() -> Path:
     return Path.home() / ".hermes" / "skills"
+
+
+def _default_hermes_config_path() -> Path:
+    return Path.home() / ".hermes" / "config.yaml"
 
 
 def _default_backup_dir() -> Path:
@@ -197,7 +207,65 @@ def _skill_matches_any_pattern(skill_name: str, patterns: tuple[str, ...] | list
     return False
 
 
-def _auto_apply_skip_reason(*, skill_name: str, cfg: AutoEvolveConfig) -> str | None:
+def _skill_aliases(skill_name: str) -> set[str]:
+    """Return config/name aliases Hermes may use for the same skill."""
+
+    normalized = str(skill_name).strip().casefold()
+    aliases = {normalized} if normalized else set()
+    if "/" in normalized:
+        aliases.add(normalized.rsplit("/", 1)[-1])
+    return aliases
+
+
+def _walk_channel_skill_bindings(node: Any) -> set[str]:
+    """Recursively collect skills from Hermes `channel_skill_bindings` blocks."""
+
+    names: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "channel_skill_bindings" and isinstance(value, list):
+                for binding in value:
+                    if isinstance(binding, dict):
+                        for skill in binding.get("skills") or []:
+                            if isinstance(skill, str) and skill.strip():
+                                names.update(_skill_aliases(skill))
+            else:
+                names.update(_walk_channel_skill_bindings(value))
+    elif isinstance(node, list):
+        for item in node:
+            names.update(_walk_channel_skill_bindings(item))
+    return names
+
+
+def discover_channel_bound_skills(config_path: str | Path | None = None) -> set[str]:
+    """Return skill names referenced by Hermes channel auto-load bindings.
+
+    Channel-bound skills are injected into new sessions before the user has a
+    chance to steer the agent.  They need a much smaller size budget than
+    manually loaded skills, so unattended curator writes protect them by
+    default.
+    """
+
+    path = Path(config_path) if config_path is not None else _default_hermes_config_path()
+    if not path.exists() or not path.is_file():
+        return set()
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return set()
+    return _walk_channel_skill_bindings(data)
+
+
+def _skill_is_channel_bound(skill_name: str, channel_bound_skills: set[str]) -> bool:
+    return bool(_skill_aliases(skill_name) & {name.casefold() for name in channel_bound_skills})
+
+
+def _auto_apply_skip_reason(
+    *,
+    skill_name: str,
+    cfg: AutoEvolveConfig,
+    channel_bound_skills: set[str] | None = None,
+) -> str | None:
     """Return why unattended apply should not write this skill, if blocked."""
 
     allowlist = _normalize_patterns(cfg.auto_apply_allowlist)
@@ -207,6 +275,13 @@ def _auto_apply_skip_reason(*, skill_name: str, cfg: AutoEvolveConfig) -> str | 
     allowlisted = _skill_matches_any_pattern(skill_name, allowlist)
     if allowlist and not allowlisted:
         return "auto-apply-not-allowlisted"
+    if (
+        cfg.protect_channel_bound_skills
+        and channel_bound_skills
+        and _skill_is_channel_bound(skill_name, channel_bound_skills)
+        and not allowlisted
+    ):
+        return "channel-bound-skill-auto-apply-protected"
     if (
         cfg.protect_core_skills
         and _skill_matches_any_pattern(skill_name, _DEFAULT_CORE_AUTO_APPLY_PROTECTED_PATTERNS)
@@ -730,6 +805,10 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     report = build_report(store, days=days)
     skill_files = discover_skill_files(skills_dir)
     source_context = build_skill_source_context(skills_dir)
+    hermes_config_path = (
+        Path(cfg.hermes_config_path) if cfg.hermes_config_path is not None else _default_hermes_config_path()
+    )
+    channel_bound_skills = discover_channel_bound_skills(hermes_config_path)
     names, selection_metadata, selection = _select_candidate_skill_names(
         report=report,
         skills_dir=skills_dir,
@@ -778,6 +857,12 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "target_path": str(skill_file) if skill_file else None,
             "source": source_info.source if source_info else "missing",
             "source_writable": bool(source_info.writable) if source_info else False,
+            "channel_bound": _skill_is_channel_bound(name, channel_bound_skills),
+            "auto_loaded_skill_max_chars": _bounded(
+                cfg.auto_loaded_skill_max_chars,
+                minimum=1_000,
+                maximum=_MAX_SKILL_CONTENT_CHARS,
+            ),
         }
         if not skill_file:
             candidate["status"] = "skipped"
@@ -796,10 +881,23 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                 candidate["reason"] = "source-not-agent-created"
                 candidates.append(candidate)
                 continue
-            skip_reason = _auto_apply_skip_reason(skill_name=name, cfg=cfg)
+            skip_reason = _auto_apply_skip_reason(
+                skill_name=name,
+                cfg=cfg,
+                channel_bound_skills=channel_bound_skills,
+            )
             if skip_reason:
                 candidate["status"] = "skipped"
                 candidate["reason"] = skip_reason
+                candidates.append(candidate)
+                continue
+            if candidate["channel_bound"] and len(original) > candidate["auto_loaded_skill_max_chars"]:
+                candidate["status"] = "skipped"
+                candidate["reason"] = "channel-bound-skill-over-size-budget"
+                candidate["content_size"] = {
+                    "current_chars": len(original),
+                    "auto_loaded_skill_max_chars": candidate["auto_loaded_skill_max_chars"],
+                }
                 candidates.append(candidate)
                 continue
         skill_report = build_report(store, days=days, skill=name)
@@ -845,6 +943,22 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             candidates.append(candidate)
             continue
         updated = prepared.content
+        if (
+            cfg.apply_low_risk
+            and cfg.approve_auto_apply
+            and candidate["channel_bound"]
+            and len(updated) > candidate["auto_loaded_skill_max_chars"]
+        ):
+            candidate["status"] = "skipped"
+            candidate["reason"] = "channel-bound-skill-over-size-budget"
+            candidate["size_strategy"] = prepared.size_strategy
+            candidate["content_size"] = {
+                "current_chars": len(original),
+                "updated_chars": len(updated),
+                "auto_loaded_skill_max_chars": candidate["auto_loaded_skill_max_chars"],
+            }
+            candidates.append(candidate)
+            continue
         candidate.update(
             {
                 "status": "planned",
@@ -932,6 +1046,12 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "writes_require_apply_low_risk": True,
             "writes_require_auto_approval": True,
             "protect_core_skills": bool(cfg.protect_core_skills),
+            "protect_channel_bound_skills": bool(cfg.protect_channel_bound_skills),
+            "auto_loaded_skill_max_chars": _bounded(
+                cfg.auto_loaded_skill_max_chars,
+                minimum=1_000,
+                maximum=_MAX_SKILL_CONTENT_CHARS,
+            ),
             "auto_apply_policy": "local-agent-created-skills-only",
             "auto_apply_source_policy": "bundled/hub/external/plugin/unknown sources are skipped",
             "protected_core_patterns": list(_DEFAULT_CORE_AUTO_APPLY_PROTECTED_PATTERNS),
@@ -947,6 +1067,8 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "skills_dir": str(skills_dir),
             "backup_dir": str(backup_dir),
             "hermes_home": str(source_context.hermes_home),
+            "hermes_config_path": str(hermes_config_path),
+            "channel_bound_skills": sorted(channel_bound_skills),
             "local_skills_dir": str(source_context.local_skills_dir),
             "external_dirs": [str(path) for path in source_context.external_dirs],
             "bundled_skill_count": len(source_context.bundled_names),
@@ -957,6 +1079,12 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "semantic_candidates": bool(cfg.semantic_candidates),
             "rerank_candidates": bool(cfg.rerank_candidates),
             "protect_core_skills": bool(cfg.protect_core_skills),
+            "protect_channel_bound_skills": bool(cfg.protect_channel_bound_skills),
+            "auto_loaded_skill_max_chars": _bounded(
+                cfg.auto_loaded_skill_max_chars,
+                minimum=1_000,
+                maximum=_MAX_SKILL_CONTENT_CHARS,
+            ),
             "auto_apply_allowlist": list(_normalize_patterns(cfg.auto_apply_allowlist)),
             "auto_apply_blocklist": list(_normalize_patterns(cfg.auto_apply_blocklist)),
             "variants": _bounded(cfg.variants or 1, minimum=1, maximum=len(_VARIANT_SPECS)),
