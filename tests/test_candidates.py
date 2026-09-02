@@ -517,3 +517,87 @@ def test_u43_stringified_structured_failure_is_caught():
 def test_u43_list_of_results_is_error_iff_any_element_is():
     assert looks_like_error([{"ok": True}, {"code": 1}]) is True
     assert looks_like_error([{"ok": True}, "0 failed, 3 passed"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U51 (assessment S1/S2/S4/S7, pass-6 adversarial corpus v2): the
+# classifier's second reopen. Every probe below is lifted from
+# repro-pass6.py F1/F2/F4/F5 and stays a permanent regression.
+# ---------------------------------------------------------------------------
+
+_U51_COUNT_CASES = [
+    # S1: the cycle-5 (?<!0\s)failed lookbehind cleared every count ending
+    # in a zero — paired counts must bind at ANY digit width.
+    ("10 failed, 2 passed in 0.03s", True),
+    ("20 failed, 5 errors", True),
+    ("100 failed", True),
+    ("110 failed", True),
+    ("7 failed, 3 passed", True),  # control: non-zero-ending counts always fired
+    ("0 failed, 12 passed", False),  # zero-count reports stay success
+    ("grep: 0 failed", False),
+    ("2 packages failed to install: foo, bar", True),  # keyword without adjacent count
+    ("0 failed, 1 failed", True),  # any positive count in the clause wins
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U51_COUNT_CASES)
+def test_u51_paired_failure_counts_bind_at_every_digit_width(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+_U51_CODE_CASES = [
+    # S2: tool wrappers store HTTP statuses in the generic ``code`` key
+    # verbatim; recognized in-band success statuses are not process
+    # failures when no explicit failure field exists.
+    ({"code": 200, "status": "OK", "body": "hello"}, False),
+    ({"code": 201}, False),
+    ({"code": 202, "ok": True}, False),
+    ({"code": 204}, False),
+    ({"code": 0}, False),
+    ({"status_code": 200}, False),  # not an exit-code key at all
+    # unrecognized nonzero values keep exit-code semantics
+    ({"code": 8080, "listening": True}, True),
+    ({"code": 1}, True),
+    # explicit failure fields outrank an HTTP-shaped code value
+    ({"code": 200, "error": "boom"}, True),
+    ({"code": 200, "ok": False}, True),
+    ({"code": 200, "status": "error"}, True),
+    # unambiguous exit keys keep strict semantics: no HTTP carve-out
+    ({"exit_code": 200, "ok": True}, True),
+    ({"returncode": 204}, True),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U51_CODE_CASES)
+def test_u51_http_shaped_code_values(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+_U51_SCOPE_CASES = [
+    # S4: a success phrase anywhere in the payload used to clear a real
+    # failure; it may only clear the failure keywords in its own clause.
+    ("deploy failed: connection refused; earlier healthcheck reported no errors", True),
+    ("build exceeded memory limit; cache check: no tests failed", True),
+    ("deploy failed: connection refused", True),
+    ("deploy failed.\nlater: no errors reported", True),  # different line, same rule
+    ("all good: no errors; nothing failed", False),
+    ("12 passed, 0 failed", False),
+    ("success: no tests failed", False),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U51_SCOPE_CASES)
+def test_u51_success_phrases_clear_only_their_own_clause(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+def test_u51_zero_exit_truth_matches_the_pinned_code_order():
+    # S7: the docstring used to claim "zero → success" while the code checks
+    # explicit failure fields FIRST — the behavior is pinned (see
+    # ``{"exit_code": 0, "error": "boom"}`` in the U43 corpus above); the
+    # U51 docstring now states it. These keep the order pinned so a future
+    # reorder fails loudly instead of silently diverging again.
+    assert looks_like_error({"exit_code": 0, "error": "warning: retry succeeded"}) is True
+    assert looks_like_error({"exit_code": 0, "status": "error", "output": "ok"}) is True
+    assert looks_like_error({"returncode": 0, "exception": "handled by caller"}) is True
+    assert looks_like_error({"exit_code": 0, "stderr": "warnings printed, nothing failed"}) is False
