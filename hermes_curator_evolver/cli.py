@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from .auto_evolve import (
     AutoEvolveConfig,
@@ -205,6 +206,16 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     rollback = subs.add_parser("rollback", help="Rollback from a guarded apply manifest")
     rollback.add_argument("--manifest", required=True, help="Path to manifest.json")
     rollback.add_argument("--force", action="store_true", help="Rollback even if target changed after apply")
+    rollback.add_argument(
+        "--allow-any-target",
+        action="store_true",
+        help="Explicitly allow rollback of a target outside --skills-dir "
+        "(containment is otherwise mandatory; assessment C2)",
+    )
+    rollback.add_argument(
+        "--skills-dir",
+        help="Optional skills root; when set, rollback refuses manifests whose target escapes it",
+    )
     rollback.set_defaults(func=handle_cli)
 
     restore_drill = subs.add_parser(
@@ -231,6 +242,12 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     auto_run.add_argument("--backup-dir", help="Backup root for guarded apply")
     auto_run.add_argument("--max-skills", type=int, default=3, help="Max skills to consider")
     auto_run.add_argument("--min-evidence", type=int, default=2, help="Minimum skill evidence count")
+    auto_run.add_argument(
+        "--max-reference-files",
+        type=int,
+        default=5,
+        help="Auto reference files kept per skill (0 disables pruning)",
+    )
     auto_run.add_argument(
         "--semantic-candidates",
         action="store_true",
@@ -310,6 +327,13 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         help="One-command setup: backfill sessions and install the auto-run scheduler",
     )
     bootstrap.add_argument("--days", type=int, default=30, help="Historical session backfill window")
+    bootstrap.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max newest sessions to backfill (roadmap U36: bootstrap is bounded, "
+        "not full history; 0 keeps the default)",
+    )
     bootstrap_source = bootstrap.add_mutually_exclusive_group()
     bootstrap_source.add_argument(
         "--state-db",
@@ -326,7 +350,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     bootstrap.add_argument(
         "--schedule",
         default="daily",
-        help="Scheduler cadence: hourly/daily/weekly; Linux also accepts systemd OnCalendar values",
+        help="Scheduler cadence: hourly/daily/weekly; Linux also accepts systemd OnCalendar values (newline/directive characters are rejected)",
     )
     bootstrap.add_argument("--proposal-only", action="store_true", help="Install dry-run scheduler instead of applying low-risk updates")
     bootstrap.add_argument(
@@ -383,7 +407,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     install_auto.add_argument(
         "--schedule",
         default="daily",
-        help="Scheduler cadence: hourly/daily/weekly; Linux also accepts systemd OnCalendar values",
+        help="Scheduler cadence: hourly/daily/weekly; Linux also accepts systemd OnCalendar values (newline/directive characters are rejected)",
     )
     install_auto.add_argument("--skills-dir", help="Skills root for the scheduler command")
     install_auto.add_argument("--proposal-only", action="store_true", help="Scheduler runs dry-run instead of applying low-risk updates")
@@ -447,6 +471,38 @@ def _bounded_days(value: int | None, default: int = 7) -> int:
     return max(1, min(int(value or default), 3650))
 
 
+def _backfill_limit(value: int | None, default: int = 500) -> int:
+    """Bound a backfill session limit (roadmap U36: bootstrap reads bounded).
+
+    ``None``/``0``/negative fall back to the caller's default instead of the
+    old ``None`` (full history for every transcript before the days cutoff
+    ran — assessment N3).
+    """
+
+    if value is None:
+        return default
+    return max(int(value), 1) if int(value) > 0 else default
+
+
+def _explicit_int(values: dict[str, Any], key: str, default: int) -> int:
+    """Parse a numeric flag honoring an explicit zero (roadmap U16).
+
+    ``int(values.get(key) or default)`` collapses an explicit ``0`` to the
+    default, silently overriding the documented "0 disables this behavior"
+    contract for ``--max-reference-files``, ``--max-skills``,
+    ``--min-evidence`` and ``--variants`` (assessment N4/P3). Only a missing
+    or empty value falls back to the default.
+    """
+
+    raw = values.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _emit(text: str, output: str | None = None) -> None:
     if output:
         Path(output).write_text(text, encoding="utf-8")
@@ -468,11 +524,18 @@ def _format_bootstrap_result(result: dict, output_format: str = "text") -> str:
             f"✓ Backfilled {backfill.get('sessions_imported', 0)} session(s), "
             f"{backfill.get('tool_events_imported', 0)} tool event(s)"
         )
+        if backfill.get("sessions_failed"):
+            # Assessment N7: failed sessions must be visible in the human
+            # summary, not only in --format json.
+            backfill_line += f" (⚠ {backfill['sessions_failed']} session(s) failed"
+            if backfill.get("last_session_error"):
+                backfill_line += f" — last: {backfill['last_session_error']}"
+            backfill_line += ")"
     lines = [
         "Hermes Curator Evolver bootstrap",
         backfill_line,
-        f"✓ Scheduler installed: {timer.get('schedule')} "
-        f"({'enabled' if timer.get('enabled') else 'not enabled'})",
+        (f"✓ Scheduler installed: {timer.get('schedule')} "
+         f"({'enabled' if timer.get('enabled') else 'not enabled'})"),
         f"✓ Auto-apply policy: {timer.get('auto_apply_policy', 'local-agent-created-skills-only')}",
         "Next:",
     ]
@@ -489,7 +552,7 @@ def _run_bootstrap(values: dict) -> dict:
         sessions_dir=values.get("sessions_dir"),
         state_db=values.get("state_db"),
         days=_bounded_days(values.get("days"), 30),
-        limit=None,
+        limit=_backfill_limit(values.get("limit"), default=500),
     )
     timer_result = install_auto_timer(
         schedule=values.get("schedule") or "daily",
@@ -759,7 +822,13 @@ def handle_cli(args: argparse.Namespace) -> None:
         return
 
     if command == "rollback":
-        result = rollback_guarded_patch(values["manifest"], force=bool(values.get("force")))
+        allowed_roots = (values["skills_dir"],) if values.get("skills_dir") else None
+        result = rollback_guarded_patch(
+            values["manifest"],
+            force=bool(values.get("force")),
+            allowed_target_roots=allowed_roots,
+            allow_unrestricted_target=bool(values.get("allow_any_target")),
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return
 
@@ -769,8 +838,8 @@ def handle_cli(args: argparse.Namespace) -> None:
                 skills_dir=values.get("skills_dir"),
                 backup_dir=values.get("backup_dir"),
                 days=_bounded_days(values.get("days"), 7),
-                max_skills=int(values.get("max_skills") or 3),
-                min_evidence=int(values.get("min_evidence") or 2),
+                max_skills=_explicit_int(values, "max_skills", 3),
+                min_evidence=_explicit_int(values, "min_evidence", 2),
                 apply_low_risk=bool(values.get("apply_low_risk")),
                 approve_auto_apply=bool(values.get("approve_auto_apply")),
                 semantic_candidates=bool(values.get("semantic_candidates") or values.get("rerank_candidates")),
@@ -782,9 +851,10 @@ def handle_cli(args: argparse.Namespace) -> None:
                 protect_core_skills=bool(values.get("protect_core_skills")),
                 auto_apply_allowlist=tuple(values.get("allow_auto_apply_skill") or ()),
                 auto_apply_blocklist=tuple(values.get("block_auto_apply_skill") or ()),
-                variants=int(values.get("variants") or 1),
+                variants=_explicit_int(values, "variants", 1),
                 require_restore_drill=bool(values.get("require_restore_drill")),
                 restore_drill_state_path=values.get("restore_drill_state_file"),
+                max_reference_files=_explicit_int(values, "max_reference_files", 5),
             )
         )
         print(format_auto_evolve_result(result, output_format=values.get("format") or "markdown"))
@@ -820,6 +890,12 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(f"Sessions seen: {result['sessions_seen']}")
             print(f"Sessions imported: {result['sessions_imported']}")
             print(f"Skipped old sessions: {result['sessions_skipped_old']}")
+            # Assessment N7: failed sessions were invisible in the human
+            # summary (json only) — surface the count and the last reason.
+            if result.get("sessions_failed"):
+                print(f"Failed sessions: {result['sessions_failed']}")
+                if result.get("last_session_error"):
+                    print(f"Last session error: {result['last_session_error']}")
             print(f"Failed files: {result['files_failed']}")
             print(f"Tool events imported: {result['tool_events_imported']}")
             print(f"Turn events imported: {result['turn_events_imported']}")

@@ -265,7 +265,8 @@ Hard defaults:
 - ✅ Apply creates a backup before writing.
 - ✅ Failed validation auto-restores the backup.
 - ✅ `auto-run` writes only managed bounded blocks and still requires both `--apply-low-risk` and `--approve-auto-apply` before mutation.
-- ✅ Bulky autorun evidence spills into `references/` instead of growing `SKILL.md` past the tool cap; already-over-hard-cap skills are skipped.
+- ✅ Bulky autorun evidence spills into `references/` instead of growing `SKILL.md` past the tool cap; already-over-hard-cap skills are skipped. `auto-run --max-reference-files N` (default 3) bounds how many spill files one run may create; explicit numeric flags are honored as typed.
+- ✅ Out-of-range numeric options (`--days`, `--max-skills`, `--min-evidence`, `--max-reference-files`, `--variants`) are clamped to their documented bounds with a logged warning naming the old and new value — never silently rewritten.
 - ✅ Even with both write flags, unattended auto-apply writes only local agent-created skills. Official/bundled skills (`.bundled_manifest`), hub-installed skills (`.hub/lock.json`), plugin-provided skills, `skills.external_dirs`, pinned skills, and unknown sources are skipped.
 - ✅ `--semantic-candidates` / `--rerank-candidates` are explicit opt-ins and only reorder skills that already passed the evidence threshold.
 - ✅ Optional `--variants N` (default `1`) deterministically generates up to four bounded variants and picks one winner; only the winner is applied, and variant generation never executes model-generated code. See [docs/hyperagents-design-notes.md](docs/hyperagents-design-notes.md).
@@ -343,7 +344,17 @@ hermes-curator-evolver apply \
   --approve
 
 # Rollback
-hermes-curator-evolver rollback --manifest .curator-evolver-backups/<timestamp>/manifest.json
+# The guarded rollback refuses an unrestricted target unless you explicitly
+# opt in, so pass the skills root you operate on (or --allow-any-target when
+# the manifest's target legitimately lives outside it):
+hermes-curator-evolver rollback \
+  --manifest .curator-evolver-backups/<timestamp>/manifest.json \
+  --skills-dir ~/.hermes/skills
+# Equivalent when the target is outside every skills root (explicit opt-in):
+hermes-curator-evolver rollback \
+  --manifest .curator-evolver-backups/<timestamp>/manifest.json \
+  --allow-any-target
+# Use --force when the target changed after apply and you accept restoring over it.
 
 # Restore drill (non-destructive: replay manifest into a clean dir and report pass/fail)
 hermes-curator-evolver restore-drill --manifest .curator-evolver-backups/<timestamp>/manifest.json --format json

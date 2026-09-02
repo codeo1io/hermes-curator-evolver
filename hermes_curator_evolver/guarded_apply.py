@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,8 +38,96 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
+def _atomic_write_bytes(
+    path: Path, data: bytes, mode: int | None = None
+) -> None:
+    """Write bytes via temp file + atomic rename (roadmap U35/U18/U44).
+
+    A partial write must never be visible as the target's content: the temp
+    file lives in the destination directory (same filesystem, so ``os.replace``
+    is atomic) and readers either see the old bytes or the complete new ones.
+    The temp file also inherits the target's existing permission bits — or an
+    explicit ``mode`` — before the rename, so an apply or rollback no longer
+    re-creates a carefully-chmodded file at the process umask (assessment
+    Q3: 0o640 became 0o664 through both apply and rollback).
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+    try:
+        with temp.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        dest_mode = mode
+        if dest_mode is None:
+            try:
+                dest_mode = path.stat().st_mode & 0o7777
+            except OSError:
+                dest_mode = None  # new file: keep the umask default
+        if dest_mode is not None:
+            os.chmod(temp, dest_mode)
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, text: str, mode: int | None = None) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"), mode=mode)
+
+
+def _atomic_copy(source: Path, dest: Path) -> None:
+    """Copy via the atomic write path, preserving the source's mode (U44)."""
+
+    source_path = Path(source)
+    try:
+        source_mode = source_path.stat().st_mode & 0o7777
+    except OSError:
+        source_mode = None
+    _atomic_write_bytes(dest, source_path.read_bytes(), mode=source_mode)
+
+
 def _write_manifest(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    _atomic_write_text(
+        path, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
+    )
+
+
+_VERIFY_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "TERM", "LANG")
+
+
+def _build_verify_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Construct a minimal environment for verify commands (roadmap U3).
+
+    The full parent environment is deliberately NOT forwarded: a verify
+    command runs attacker-adjacent tooling against a freshly written skill
+    file, and leaking every ``os.environ`` entry (API keys, proxy settings,
+    job secrets) into it widens the blast radius of a tampered
+    ``verify_command``. Only the variables shell commands need to start -
+    ``PATH``/``HOME`` plus locale - are passed, then the caller's explicit
+    per-apply context (``HERMES_CURATOR_*``) on top.
+    """
+
+    env = {key: os.environ[key] for key in _VERIFY_ENV_KEYS if os.environ.get(key)}
+    env.update(
+        {key: value for key, value in os.environ.items() if key.startswith("LC_") and value}
+    )
+    env.update({key: value for key, value in (extra or {}).items() if value is not None})
+    return env
+
+
+def _resolve_within(path: Path, root: Path) -> Path | None:
+    """Resolve ``path`` and return it only if it stays inside ``root``."""
+
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        return None
+    if resolved == root_resolved or root_resolved in resolved.parents:
+        return resolved
+    return None
 
 
 def _run_verify(command: str | None, cwd: Path | None, env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -54,7 +143,7 @@ def _run_verify(command: str | None, cwd: Path | None, env: dict[str, str] | Non
             stderr=subprocess.STDOUT,
             timeout=300,
             check=False,
-            env={**os.environ, **(env or {})},
+            env=_build_verify_env(env),
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -276,7 +365,7 @@ def apply_guarded_patch(
     }
     _write_manifest(manifest_path, manifest)
 
-    target.write_text(new_content, encoding="utf-8")
+    _atomic_write_text(target, new_content)
     manifest["new_sha256"] = sha256_file(target)
     verify_env = {
         "HERMES_CURATOR_TARGET_PATH": str(target),
@@ -302,7 +391,7 @@ def apply_guarded_patch(
         )
     manifest["verify"] = verify
     if not verify["passed"]:
-        shutil.copy2(backup_path, target)
+        _atomic_copy(backup_path, target)
         manifest["rolled_back"] = True
         manifest["rollback_reason"] = "verify-failed"
         if verify.get("failed_stage"):
@@ -387,11 +476,169 @@ def register_support_file_in_manifest(
     return {"recorded": True, "entry": entry}
 
 
-def rollback_guarded_patch(manifest_path: str | Path, *, force: bool = False) -> dict[str, Any]:
+def _snapshot_for_safety(source: Path, safety_dir: Path, label: str) -> Path | None:
+    """Copy a file into the rollback safety directory before touching it.
+
+    Fail-closed (roadmap U35): every destructive rollback step keeps a
+    recoverable copy under the manifest's own directory, so even a validated
+    removal can be undone. ``None`` means the snapshot failed and the caller
+    must skip the destructive step. The copy goes through the atomic write
+    primitive with fsync and mode preservation (roadmap U44, assessment Q5):
+    an interrupted snapshot must leave either the complete recoverable copy
+    or nothing — never a torn half-file that *looks* like the safety net.
+    """
+
+    try:
+        safe_name = label.replace("/", "__").replace("\\", "__")
+        dest = safety_dir / f"{_timestamp()}-{safe_name}"
+        _atomic_copy(Path(source), dest)
+        return dest
+    except OSError:
+        return None
+
+
+def _rollback_support_files(
+    manifest: dict[str, Any], target: Path, manifest_dir: Path | None = None
+) -> dict[str, list[Any]]:
+    """Remove support files this apply created, leaving edited ones alone.
+
+    ``register_support_file_in_manifest`` snapshots post-apply support files
+    (e.g. ``references/...`` spill) so restore drills can recreate them. A
+    rollback must undo the apply's *writes*: a live file whose hash still
+    matches the snapshot was created by this apply and is removed; one that
+    no longer matches was touched afterwards and is skipped rather than
+    destroyed. Snapshots under the backup stay on disk for the drill.
+
+    Manifest entries are untrusted input (assessment N1): a tampered entry
+    naming the restored target itself used to delete it after restore. Every
+    entry is now validated before any unlink —
+
+    * it must not resolve to the rollback target itself (target-identity
+      refusal),
+    * it must be registered, i.e. carry a snapshot path that stays inside the
+      manifest's own directory and actually exists (registration
+      cross-check),
+    * and the live file is snapshotted into the rollback-safety directory
+      first, fail-closed.
+    """
+
+    results: dict[str, list[Any]] = {"removed": [], "skipped": [], "missing": []}
+    safety_dir = (Path(manifest_dir) / "rollback-safety") if manifest_dir else None
+    try:
+        target_resolved = target.resolve()
+    except OSError:
+        target_resolved = Path(target).absolute()
+    for entry in manifest.get("support_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        relative = entry.get("path")
+        if not isinstance(relative, str) or not relative:
+            continue
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            results["skipped"].append({"path": relative, "reason": "unsafe-relative-path"})
+            continue
+        live = _resolve_within(target.parent / relative_path, target.parent)
+        if live is None:
+            results["skipped"].append({"path": relative, "reason": "unsafe-relative-path"})
+            continue
+        if live == target_resolved:
+            # N1: the target of the rollback is never a support file; a
+            # manifest claiming otherwise is tampered, not descriptive.
+            results["skipped"].append({"path": relative, "reason": "target-file"})
+            continue
+        entry_snapshot = entry.get("backup_path")
+        if manifest_dir is not None:
+            registered = isinstance(entry_snapshot, str) and _resolve_within(
+                Path(entry_snapshot), Path(manifest_dir)
+            ) is not None and Path(entry_snapshot).is_file()
+            if not registered:
+                results["skipped"].append({"path": relative, "reason": "not-registered"})
+                continue
+        if not live.exists() or not live.is_file():
+            results["missing"].append(relative)
+            continue
+        recorded_sha = entry.get("sha256")
+        if recorded_sha and sha256_file(live) != recorded_sha:
+            results["skipped"].append({"path": relative, "reason": "file-changed-since-apply"})
+            continue
+        safety_copy = None
+        if safety_dir is not None:
+            safety_copy = _snapshot_for_safety(live, safety_dir, relative)
+            if safety_copy is None:
+                results["skipped"].append({"path": relative, "reason": "safety-snapshot-failed"})
+                continue
+        try:
+            live.unlink()
+            removed: dict[str, Any] = {"path": relative}
+            if safety_copy is not None:
+                removed["safety_copy"] = str(safety_copy)
+            results["removed"].append(removed)
+        except OSError as exc:
+            results["skipped"].append(
+                {"path": relative, "reason": f"unlink-failed:{exc.__class__.__name__}"}
+            )
+    return results
+
+
+def rollback_guarded_patch(
+    manifest_path: str | Path,
+    *,
+    force: bool = False,
+    allowed_target_roots: tuple[str | Path, ...] | list[str | Path] | None = None,
+    allow_unrestricted_target: bool = False,
+) -> dict[str, Any]:
+    """Restore the pre-apply target and undo the apply's support-file writes.
+
+    Paths from the manifest are treated as untrusted input: the backup must
+    resolve inside the manifest's own backup directory, and - when callers
+    supply ``allowed_target_roots`` (the skills roots they operate on) - the
+    target must resolve inside one of them before anything is copied
+    (roadmap U3; a tampered manifest must not turn rollback into an
+    arbitrary-file overwrite primitive).
+
+    U35 closes the remaining escape: without ``allowed_target_roots`` the
+    rollback used to accept ANY target path (assessment C2 — the CLI's
+    default when ``--skills-dir`` was omitted). An unrestricted rollback is
+    now an explicit, per-call opt-in (``allow_unrestricted_target=True``);
+    the refusal tells the caller how to fix it. Before the restore, the
+    current target bytes are snapshotted into the manifest's
+    ``rollback-safety/`` directory, fail-closed: if that snapshot cannot be
+    written the rollback aborts rather than overwrite the only copy.
+    """
+
     manifest_file = Path(manifest_path)
     manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     target = Path(manifest["target_path"])
     backup = Path(manifest["backup_path"])
+    if _resolve_within(backup, manifest_file.parent) is None:
+        return {
+            "rolled_back": False,
+            "reason": "unsafe-backup-path",
+            "target_path": str(target),
+            "backup_path": str(backup),
+            "manifest_path": str(manifest_file),
+        }
+    if not allowed_target_roots and not allow_unrestricted_target:
+        return {
+            "rolled_back": False,
+            "reason": "unrestricted-target",
+            "target_path": str(target),
+            "backup_path": str(backup),
+            "manifest_path": str(manifest_file),
+            "hint": "pass allowed_target_roots (the skills root), or set "
+            "allow_unrestricted_target=True to override containment explicitly",
+        }
+    if allowed_target_roots and not any(
+        _resolve_within(target, Path(root)) is not None for root in allowed_target_roots
+    ):
+        return {
+            "rolled_back": False,
+            "reason": "unsafe-target-path",
+            "target_path": str(target),
+            "backup_path": str(backup),
+            "manifest_path": str(manifest_file),
+        }
     if not backup.exists():
         return {"rolled_back": False, "reason": "backup-not-found"}
     expected_current = manifest.get("new_sha256")
@@ -403,9 +650,28 @@ def rollback_guarded_patch(manifest_path: str | Path, *, force: bool = False) ->
             "expected_sha256": expected_current,
             "current_sha256": sha256_file(target),
         }
-    shutil.copy2(backup, target)
+    safety_dir = manifest_file.parent / "rollback-safety"
+    target_safety_copy: str | None = None
+    if target.exists():
+        snapshot = _snapshot_for_safety(target, safety_dir, target.name)
+        if snapshot is None:
+            return {
+                "rolled_back": False,
+                "reason": "safety-snapshot-failed",
+                "target_path": str(target),
+                "backup_path": str(backup),
+                "manifest_path": str(manifest_file),
+            }
+        target_safety_copy = str(snapshot)
+    _atomic_copy(backup, target)
+    support_results = _rollback_support_files(manifest, target, manifest_dir=manifest_file.parent)
     manifest["rolled_back"] = True
     manifest["rolled_back_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest["rollback_support_files"] = support_results
+    manifest["rollback_safety"] = {
+        "dir": str(safety_dir),
+        "target_snapshot": target_safety_copy,
+    }
     _write_manifest(manifest_file, manifest)
     return {
         "rolled_back": True,
@@ -413,4 +679,6 @@ def rollback_guarded_patch(manifest_path: str | Path, *, force: bool = False) ->
         "target_path": str(target),
         "backup_path": str(backup),
         "manifest_path": str(manifest_file),
+        "support_files": support_results,
+        "rollback_safety": manifest["rollback_safety"],
     }

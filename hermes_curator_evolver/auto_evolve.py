@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import html
 import json
+import logging
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ from typing import Any
 import yaml
 
 from .paths import hermes_home
+
+logger = logging.getLogger(__name__)
 
 from .guarded_apply import (
     apply_guarded_patch,
@@ -111,6 +114,7 @@ class AutoEvolveConfig:
     hermes_config_path: str | Path | None = None
     protect_channel_bound_skills: bool = True
     auto_loaded_skill_max_chars: int = _AUTO_LOADED_SKILL_MAX_CHARS
+    max_reference_files: int = 5
 
 
 @dataclass(frozen=True)
@@ -164,8 +168,29 @@ def _default_backup_dir() -> Path:
     return hermes_home() / "plugins" / "curator-evolver" / "backups"
 
 
-def _bounded(value: int, *, minimum: int, maximum: int) -> int:
-    return max(minimum, min(int(value), maximum))
+def _bounded(value: int, *, minimum: int, maximum: int, label: str = "") -> int:
+    """Clamp a value into [minimum, maximum], warning when it rewrites (Q8).
+
+    Assessment Q8: the old silent ``max(min(...))`` rewrote out-of-range
+    config values with no observable signal, so a user's ``--days 99999``
+    quietly became 3650. The clamp still applies (unattended runs must stay
+    bounded) but every rewrite now logs a warning naming the value, the
+    label, and the bound that fired.
+    """
+
+    number = int(value)
+    clamped = max(minimum, min(number, maximum))
+    if clamped != number:
+        which = "minimum" if clamped == minimum and number < minimum else "maximum"
+        logger.warning(
+            "curator-evolver config value%s clamped from %d to %d (%s bound %d)",
+            f" {label!r}" if label else "",
+            number,
+            clamped,
+            which,
+            minimum if which == "minimum" else maximum,
+        )
+    return clamped
 
 
 def _skill_name_from_text(text: str, fallback: str) -> str:
@@ -187,18 +212,90 @@ def _normalize_patterns(patterns: tuple[str, ...] | list[str] | None) -> tuple[s
 
 
 def _systemd_quote(value: str) -> str:
-    """Quote one systemd ExecStart argument while keeping the command readable."""
+    """Quote one systemd ExecStart argument while keeping the command readable.
 
-    return '"' + value.replace('\\', '\\\\').replace('"', '\"') + '"'
+    systemd expands ``%``-specifiers (``%h`` home, ``%i`` instance, …) in unit
+    values, so every literal ``%`` in an argument must be doubled (roadmap
+    U17; assessment P7's sibling: a path containing ``%h`` would silently
+    rewrite the command). Newlines are NOT survivable by quoting — a newline
+    ends the assignment line and injects a further directive — so schedule
+    values are validated before any unit is written (``_validated_on_calendar``).
+    """
+
+    escaped = value.replace("\\", "\\\\")
+    escaped = escaped.replace('"', '\\"')
+    return '"' + escaped + '"'
 
 
 def _quote_systemd_arg(value: str) -> str:
-    """Quote an ExecStart argument only when systemd parsing needs it."""
+    """Quote an ExecStart argument only when systemd parsing needs it.
+
+    systemd unit files have NO escape sequence for a newline inside an
+    assignment: quoting cannot make one survivable, so an argument carrying
+    a control character is rejected outright (roadmap U17 / assessment P7)
+    instead of being written into a unit verbatim where it would start a
+    fresh directive (``ExecStartPost=...``) that bootstrap then enables.
+    """
 
     value = str(value)
+    if any(ch in value for ch in "\n\r\t\0"):
+        raise ValueError(
+            "systemd unit values cannot contain control characters; refusing "
+            f"to write argument {value!r} into the ExecStart command"
+        )
+    doubled = value.replace("%", "%%")
     if not value or any(ch.isspace() for ch in value) or any(ch in value for ch in '"\\'):
-        return _systemd_quote(value)
-    return value
+        return _systemd_quote(doubled)
+    return doubled
+
+
+_ONCALENDAR_ALLOWED_CHARS = re.compile(r"^[A-Za-z0-9*:,./+\- ]+$")
+_CANONICAL_CADENCES = {"hourly": "hourly", "daily": "daily", "weekly": "weekly"}
+
+
+def _validated_on_calendar(schedule: str) -> str:
+    """Validate a scheduler cadence against the accepted systemd subset (U17).
+
+    ``hourly``/``daily``/``weekly`` pass through canonically. Anything else is
+    treated as a systemd ``OnCalendar`` expression and must survive a strict
+    character allow-list: letters, digits, ``* : , . / + -`` and spaces.
+    Control characters — a newline ends the ``OnCalendar=`` line and injects a
+    further directive that bootstrap then enables and starts (assessment P7:
+    ``--schedule 'daily\\nExecStartPost=/tmp/pwned.sh'`` landed verbatim in the
+    unit) — plus quotes, ``;``, ``#``, ``=`` and ``%`` are rejected with an
+    error naming the offending characters.
+    """
+
+    raw = str(schedule)
+    text = str(schedule or "").strip()
+    # Defense in depth: a control character anywhere in the raw input is
+    # rejected even when stripping would normalize it away — a schedule
+    # carrying a newline is a caller bug worth surfacing, not silently
+    # salvaging into a canonical cadence.
+    if any(ch in raw for ch in "\n\r\t"):
+        raise ValueError(
+            "schedule contains a control character (newline/carriage return/"
+            f"tab); systemd would treat it as a new directive: {raw!r}. "
+            "Use hourly/daily/weekly or an expression like 'Mon..Fri 09:00'."
+        )
+    canonical = _CANONICAL_CADENCES.get(text.lower())
+    if canonical:
+        return canonical
+    if not text:
+        raise ValueError(
+            "schedule must be one of hourly/daily/weekly or a systemd OnCalendar "
+            "expression (e.g. 'Mon..Fri 09:00')"
+        )
+    if not _ONCALENDAR_ALLOWED_CHARS.match(text):
+        bad = sorted({ch for ch in text if not re.match(r"[A-Za-z0-9*:,./+\- ]", ch)})
+        raise ValueError(
+            "schedule is rejected as a systemd OnCalendar expression: control "
+            "characters (newline/carriage return/tab), quotes, and directive "
+            "characters such as ';' '#' '=' are not allowed; offending "
+            f"characters: {bad!r}; schedule was {text!r}. Use "
+            "hourly/daily/weekly or an expression like 'Mon..Fri 09:00'."
+        )
+    return text
 
 
 def _skill_matches_any_pattern(skill_name: str, patterns: tuple[str, ...] | list[str] | None) -> bool:
@@ -382,7 +479,12 @@ def _managed_block(
 def _apply_managed_block(skill_text: str, block: str) -> str:
     if _START in skill_text and _END in skill_text:
         pattern = re.compile(re.escape(_START) + r".*?" + re.escape(_END) + r"\n?", re.DOTALL)
-        return pattern.sub(block, skill_text, count=1)
+        # The replacement is DATA, not a template: a lambda makes re.sub
+        # treat it literally, so evidence previews containing backreference
+        # spellings can neither raise re.error nor inject groups into the
+        # rewritten skill (roadmap U15 / assessment P1 — the auto-run
+        # crashed on any skill that already carried a managed block).
+        return pattern.sub(lambda _match: block, skill_text, count=1)
     separator = "\n" if skill_text.endswith("\n") else "\n\n"
     return skill_text + separator + block
 
@@ -396,6 +498,42 @@ def _evidence_reference_path(*, skill_name: str, generated_at: str) -> str:
     stamp = generated_at.split("+", 1)[0].replace(":", "").replace("-", "")
     stamp = stamp.replace("T", "-")[:15]
     return f"references/curator-evolver-auto-{_safe_skill_slug(skill_name)}-{stamp}.md"
+
+
+def prune_auto_reference_files(skill_dir: Path, skill_name: str, keep: int) -> list[str]:
+    """Keep only the newest ``keep`` auto-generated reference files per skill.
+
+    Every auto pass can spill evidence into
+    ``references/curator-evolver-auto-<slug>-<timestamp>.md``; without a bound
+    the directory grows forever across daily runs (roadmap U3, assessment
+    finding on unbounded references growth). Only files matching this
+    plugin's own naming pattern are ever pruned - hand-written reference
+    files are untouchable. Names embed a zero-padded UTC stamp, so lexical
+    order is recency order.
+    """
+
+    if keep <= 0:
+        # ``keep=0`` means "disable pruning" end-to-end (roadmap U16 /
+        # assessment N4): it must never delete the reference file this same
+        # pass just wrote. Only a positive bound prunes.
+        return []
+    references = Path(skill_dir) / "references"
+    if not references.is_dir():
+        return []
+    slug = _safe_skill_slug(skill_name)
+    generated = sorted(
+        references.glob(f"curator-evolver-auto-{slug}-*.md"),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    pruned: list[str] = []
+    for stale in generated[keep:]:
+        try:
+            stale.unlink()
+            pruned.append(str(stale.relative_to(skill_dir)))
+        except OSError:
+            continue
+    return pruned
 
 
 def _format_evidence_reference(
@@ -798,9 +936,12 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     """
 
     cfg = config or AutoEvolveConfig()
-    days = _bounded(cfg.days, minimum=1, maximum=3650)
-    max_skills = _bounded(cfg.max_skills, minimum=1, maximum=25)
-    min_evidence = _bounded(cfg.min_evidence, minimum=1, maximum=1000)
+    days = _bounded(cfg.days, minimum=1, maximum=3650, label="days")
+    max_skills = _bounded(cfg.max_skills, minimum=1, maximum=25, label="max_skills")
+    min_evidence = _bounded(cfg.min_evidence, minimum=1, maximum=1000, label="min_evidence")
+    max_reference_files = _bounded(
+        cfg.max_reference_files, minimum=0, maximum=100, label="max_reference_files"
+    )
     skills_dir = Path(cfg.skills_dir) if cfg.skills_dir is not None else _default_skills_dir()
     backup_dir = Path(cfg.backup_dir) if cfg.backup_dir is not None else _default_backup_dir()
     store = EvidenceStore(cfg.db_path)
@@ -1026,6 +1167,11 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                             relative_path=relative_path,
                             kind="reference-spillover",
                         )
+                    pruned_references = prune_auto_reference_files(
+                        skill_file.parent, name, max_reference_files
+                    )
+                    if pruned_references:
+                        candidate["pruned_reference_files"] = pruned_references
                     applied += 1
                     candidate["status"] = "applied"
                     if cfg.require_restore_drill:
@@ -1279,6 +1425,16 @@ def install_auto_timer(
         args.extend(["--verify-command", effective_verify_command])
         args.extend(["--verify-cwd", str(effective_verify_cwd)])
     command = " ".join(_quote_systemd_arg(str(arg)) for arg in args)
+    for pathish in (skills_dir, verify_cwd):
+        # Roadmap U17: the same control-character rule that guards the
+        # schedule guards every path embedded into the unit (a newline in
+        # ``--skills-dir`` would inject a directive exactly like a newline
+        # in ``OnCalendar``).
+        if pathish is not None and any(ch in str(pathish) for ch in "\n\r\t\0"):
+            raise ValueError(
+                f"paths written into the systemd unit must not contain control "
+                f"characters: {pathish!r}"
+            )
     result = {
         "installed": True,
         "enabled": False,
@@ -1320,7 +1476,11 @@ def install_auto_timer(
     unit_dir.mkdir(parents=True, exist_ok=True)
     service_path = unit_dir / "hermes-curator-evolver-auto.service"
     timer_path = unit_dir / "hermes-curator-evolver-auto.timer"
-    on_calendar = {"hourly": "hourly", "daily": "daily", "weekly": "weekly"}.get(schedule, schedule)
+    # Roadmap U17 (assessment P7): the cadence is validated against the
+    # accepted OnCalendar subset BEFORE any unit is written, so a
+    # newline-bearing schedule can no longer inject directives into a unit
+    # that bootstrap then enables and starts.
+    on_calendar = _validated_on_calendar(schedule)
     service_path.write_text(
         "\n".join(
             [

@@ -1,3 +1,4 @@
+import argparse
 import json
 
 from hermes_curator_evolver.__main__ import build_parser
@@ -229,7 +230,7 @@ def test_bootstrap_command_runs_backfill_and_installs_auto_timer(monkeypatch, ca
         "sessions_dir": "sessions",
         "state_db": None,
         "days": 14,
-        "limit": None,
+        "limit": 500,  # bounded bootstrap default (roadmap U36 / assessment N3)
     }
     assert calls["install_auto"]["schedule"] == "hourly"
     assert calls["install_auto"]["skills_dir"] == "skills"
@@ -255,3 +256,55 @@ def test_bootstrap_text_surfaces_state_db_read_failure():
     )
 
     assert "⚠ Backfill source failed: RuntimeError: read-only open failed" in text
+
+
+def test_auto_run_flags_honor_explicit_zero(monkeypatch, capsys):
+    """U16 / assessment P3+N4: ``--max-reference-files 0`` means zero.
+
+    The old ``int(values.get(key) or default)`` collapsed an explicit 0 to
+    the default (5), so operators could not disable reference spill or cap
+    skills at zero from the CLI even though the flags are documented as
+    supporting it. An explicit 0 must reach AutoEvolveConfig untouched;
+    a missing or empty flag falls back to the default.
+    """
+
+    captured: dict = {}
+
+    def fake_run(config):
+        captured["config"] = config
+        return {"status": "noop"}
+
+    monkeypatch.setattr("hermes_curator_evolver.cli.run_auto_evolve", fake_run)
+    monkeypatch.setattr(
+        "hermes_curator_evolver.cli.format_auto_evolve_result",
+        lambda result, output_format="markdown": "report",
+    )
+
+    def run(**overrides):
+        values = {
+            "curator_evolver_command": "auto-run",
+            "skills_dir": "skills",
+            "max_skills": None,
+            "min_evidence": None,
+            "variants": None,
+            "max_reference_files": None,
+        }
+        values.update(overrides)
+        handle_cli(argparse.Namespace(**values))
+
+    run(max_skills=0, min_evidence=0, variants=0, max_reference_files=0)
+
+    config = captured["config"]
+    assert config.max_skills == 0
+    assert config.min_evidence == 0
+    assert config.variants == 0
+    assert config.max_reference_files == 0
+
+    run(min_evidence="")
+
+    defaults = captured["config"]
+    assert defaults.max_skills == 3
+    assert defaults.min_evidence == 2
+    assert defaults.max_reference_files == 5
+    out = capsys.readouterr().out
+    assert "report" in out

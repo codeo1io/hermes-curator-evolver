@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 def _store() -> EvidenceStore:
+    """Per-call store handle over the process-warm connection (roadmap U45).
+
+    Construction is cheap — the underlying sqlite connection is cached per
+    resolved path by the storage layer (single-flight, close-at-exit), so a
+    hook call no longer opens, leaks, and checkpoint-closes a connection per
+    event (upstream #101191's corruption-precursor pattern).
+    """
+
     return EvidenceStore()
 
 
@@ -25,8 +33,11 @@ def on_post_tool_call(
 ) -> None:
     """Record compact evidence after a tool call.
 
-    Hooks must never break a Hermes session, so storage errors are logged and
-    swallowed here by design.
+    Hooks must never break a Hermes session, so storage errors are logged
+    and swallowed here by design. The storage layer already waited out
+    lock contention with bounded retries (roadmap U7a) before this boundary
+    is reached; what reaches it is a surfaced, identified failure — not a
+    silent drop.
     """
     try:
         _store().record_tool_call(

@@ -172,34 +172,87 @@ def _supports_compacted_history(get_messages: Any) -> bool:
     )
 
 
-def _iter_state_sessions(session_db: Any, limit: int | None) -> Iterator[dict[str, Any]]:
-    """Yield current Hermes sessions newest-first through the public SessionDB API."""
+def _iter_state_sessions(
+    session_db: Any,
+    limit: int | None,
+    cutoff: datetime | None = None,
+    stats: dict[str, int] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield current Hermes sessions newest-first, cutoff applied before transcripts.
 
-    offset = 0
-    emitted = 0
-    page_size = min(limit, 200) if limit is not None and limit > 0 else 200
+    ``search_sessions`` pagination order is an implementation detail of the
+    host SessionDB and must not be trusted as recency order (roadmap U4/U36):
+    a storage that returns oldest-first would silently truncate every import
+    the moment the caller's cutoff loop sees one old session. Rows are
+    therefore collected as *metadata only*, sorted by session time on the
+    client, and only then are transcripts fetched — at most ``limit`` of the
+    newest sessions inside ``cutoff`` (assessment N2/N2b/N3: the cap used to
+    bind the storage-order collection window — so ``--limit 2`` could inspect
+    ``s1, s0`` while the newest session ``s2`` was never read — and every
+    transcript was fetched before the days cutoff ran, so a one-in-window
+    import read full history). Sessions older than ``cutoff`` are counted in
+    ``stats['sessions_skipped_old']`` and never fetched.
+    """
+
     get_messages = session_db.get_messages
     include_compacted = _supports_compacted_history(get_messages)
-    while True:
-        rows = list(session_db.search_sessions(limit=page_size, offset=offset) or [])
+    collected: list[tuple[datetime, dict[str, Any]]] = []
+    seen_ids: set[str] = set()
+    # Metadata collection is capped so a pathological storage that never
+    # returns a short/empty page (shifting pages, an infinite tail) cannot
+    # spin the reader forever (assessment R8's hostile fake did exactly
+    # this). The cap never binds a real import below its own ``limit``.
+    metadata_cap = max(int(limit or 0), 10_000)
+    offset = 0
+    while len(collected) < metadata_cap:
+        rows = list(session_db.search_sessions(limit=200, offset=offset) or [])
         if not rows:
-            return
+            break
         for row in rows:
-            if limit is not None and limit > 0 and emitted >= limit:
-                return
             data = dict(row)
             session_id = str(data.get("id") or data.get("session_id") or "")
-            if not session_id:
-                continue
+            if session_id and session_id not in seen_ids:
+                # Dedupe across shifting pages (roadmap R8): a session that
+                # reappears on a later page is the same import, not a new one.
+                seen_ids.add(session_id)
+                collected.append((_session_time(data), data))
+        if len(rows) < 200:
+            break
+        offset += len(rows)
+    # Trusted order: sort by the session's own time, newest first, and only
+    # then apply the cutoff and the limit (roadmap U36).
+    collected.sort(key=lambda item: item[0], reverse=True)
+    in_window: list[tuple[datetime, dict[str, Any]]] = []
+    remaining_old = 0
+    for index, (session_dt, data) in enumerate(collected):
+        if cutoff is not None and session_dt < cutoff:
+            # Sorted newest-first: every later row is at least as old, so the
+            # whole tail is skipped in one count instead of one-by-one. They
+            # were examined (and counted as seen), but no transcript is
+            # fetched for them (assessment N3).
+            remaining_old = len(collected) - index
+            break
+        in_window.append((session_dt, data))
+    # The cap now binds the newest in-window sessions, not the storage-order
+    # collection window (assessment N2/N2b).
+    selected = in_window if limit is None or limit <= 0 else in_window[:limit]
+    for _session_dt, data in selected:
+        session_id = str(data.get("id") or data.get("session_id") or "")
+        try:
             if include_compacted:
                 data["messages"] = get_messages(session_id, include_compacted=True)
             else:
                 data["messages"] = get_messages(session_id)
-            emitted += 1
-            yield data
-        if len(rows) < page_size:
-            return
-        offset += len(rows)
+        except Exception as exc:  # noqa: BLE001 - any driver/IO error on one
+        # transcript must not abort the import (roadmap U4); the drop is
+        # surfaced to the caller via ``transcript_error`` instead of logging
+        # from inside a read-only iterator.
+            data["messages"] = []
+            data["transcript_error"] = f"{type(exc).__name__}: {exc}"
+        yield data
+    if remaining_old and stats is not None:
+        stats["sessions_skipped_old"] = stats.get("sessions_skipped_old", 0) + remaining_old
+        stats["sessions_seen"] = stats.get("sessions_seen", 0) + remaining_old
 
 
 def _session_time(data: dict[str, Any], fallback: datetime | None = None) -> datetime:
@@ -354,6 +407,7 @@ def backfill_sessions(
         "sessions_seen": 0,
         "sessions_imported": 0,
         "sessions_skipped_old": 0,
+        "sessions_failed": 0,
         "files_failed": 0,
         "tool_events_imported": 0,
         "turn_events_imported": 0,
@@ -364,30 +418,43 @@ def backfill_sessions(
         return result
 
     if use_state_db:
-        session_db = None
         try:
             SessionDB = getattr(importlib.import_module("hermes_state"), "SessionDB")
             session_db = SessionDB(db_path=state_path, read_only=True)
-            for data in _iter_state_sessions(session_db, limit):
-                result["sessions_seen"] += 1
-                session_dt = _session_time(data)
-                if session_dt < cutoff:
-                    result["sessions_skipped_old"] += 1
-                    break
-                _import_session_data(
-                    data,
-                    evidence=evidence,
-                    result=result,
-                    session_dt=session_dt,
-                    fallback_session_id="",
-                    current_state_session=True,
-                )
         except Exception as exc:
             result["files_failed"] += 1
             result["source_error"] = f"{type(exc).__name__}: {exc}"
+            return result
+        try:
+            for data in _iter_state_sessions(session_db, limit, cutoff, result):
+                result["sessions_seen"] += 1
+                if data.get("transcript_error"):
+                    result["sessions_failed"] += 1
+                    result["last_session_error"] = (
+                        f"unreadable transcript: {data['transcript_error']}"
+                    )
+                    continue
+                try:
+                    session_dt = _session_time(data)
+                    if session_dt < cutoff:
+                        result["sessions_skipped_old"] += 1
+                        continue
+                    _import_session_data(
+                        data,
+                        evidence=evidence,
+                        result=result,
+                        session_dt=session_dt,
+                        fallback_session_id="",
+                        current_state_session=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - per-session boundary
+                # (roadmap U4): breadth is deliberate so one corrupt or
+                # half-written session becomes a counted skip, never a
+                # wholesale abort of the import; the summary surfaces it.
+                    result["sessions_failed"] += 1
+                    result["last_session_error"] = f"{type(exc).__name__}: {exc}"
         finally:
-            if session_db is not None:
-                session_db.close()
+            session_db.close()
         return result
 
     for path in _iter_session_files(legacy_dir, limit):

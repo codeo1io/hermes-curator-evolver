@@ -2,13 +2,35 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .cli import handle_cli, setup_cli
 from .hooks import on_post_llm_call, on_post_tool_call, on_session_end
 from .tools import CURATOR_EVIDENCE_REPORT_SCHEMA, curator_evidence_report
 
-__version__ = "0.8.0"
+
+def _plugin_version() -> str:
+    """Single-source the version from plugin.yaml (roadmap U7b).
+
+    Hermes loads ``plugin.yaml`` as the plugin's version surface, so it is
+    the source of truth; this module used to carry an independent
+    ``0.8.0`` that drifted (assessment Q-class finding: the two disagreed
+    since cycle 1). The manifest lives next to the package root; if it is
+    missing (unusual layouts) the last-known literal below is used so imports
+    never fail. A test pins the two surfaces together.
+    """
+
+    manifest = Path(__file__).resolve().parent.parent / "plugin.yaml"
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return "0.10.0"
+    match = re.search(r"^version:\s*[\"']?([^\"'\n]+)[\"']?\s*$", text, re.MULTILINE)
+    return match.group(1).strip() if match else "0.10.0"
+
+
+__version__ = _plugin_version()
 
 
 def _handle_slash_command(raw_args: str) -> str:

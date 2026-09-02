@@ -1064,3 +1064,241 @@ def test_auto_evolve_apply_uses_staged_verify_when_pre_verify_command_set(tmp_pa
     assert candidate["status"] == "applied"
     assert "Auto-curated evidence notes" in skill_file.read_text(encoding="utf-8")
     assert result["config"]["staged_verify"] is True
+
+
+def test_prune_auto_reference_files_keeps_newest_and_never_touches_handwritten(tmp_path):
+    # Roadmap U3: the references/curator-evolver-auto-*.md spill grew without
+    # bound across daily runs; pruning keeps the newest N per skill and only
+    # ever matches this plugin's own generated naming pattern.
+    skill_dir = tmp_path / "demo"
+    references = skill_dir / "references"
+    references.mkdir(parents=True)
+    generated = [
+        f"curator-evolver-auto-demo-2026090{day}-120000.md" for day in (1, 2, 3)
+    ]
+    for name in generated:
+        (references / name).write_text("spilled evidence", encoding="utf-8")
+    handwritten = references / "handwritten-runbook.md"
+    handwritten.write_text("user-authored", encoding="utf-8")
+    other_skill = references / "curator-evolver-auto-other-skill-20260901-120000.md"
+    other_skill.write_text("different skill slug", encoding="utf-8")
+
+    pruned = auto_evolve.prune_auto_reference_files(skill_dir, "demo", keep=2)
+
+    assert pruned == ["references/curator-evolver-auto-demo-20260901-120000.md"]
+    assert (references / generated[0]).exists() is False
+    for name in generated[1:]:
+        assert (references / name).exists()
+    assert handwritten.exists()
+    assert other_skill.exists()
+
+
+def test_prune_auto_reference_files_disable_and_handwritten_protection(tmp_path):
+    """U16 / assessment N4: keep=0 disables pruning end-to-end.
+
+    The old ``keep < 0`` guard let keep=0 fall through to ``generated[0:]``
+    — pruning every auto reference including the one the same pass just
+    wrote — while the CLI help documents 0 as "disable". A non-positive
+    bound must prune nothing; only a positive bound prunes, and hand-written
+    reference files remain untouchable.
+    """
+
+    skill_dir = tmp_path / "demo"
+
+    assert auto_evolve.prune_auto_reference_files(skill_dir, "demo", keep=5) == []
+
+    references = skill_dir / "references"
+    references.mkdir(parents=True)
+    newest = references / "curator-evolver-auto-demo-20260902-120000.md"
+    newest.write_text("spilled evidence", encoding="utf-8")
+    handwritten = references / "operator-notes.md"
+    handwritten.write_text("hand-written", encoding="utf-8")
+
+    # keep=0 is the documented disable: nothing is pruned, including the
+    # reference file a same-day pass just wrote.
+    assert auto_evolve.prune_auto_reference_files(skill_dir, "demo", keep=0) == []
+    assert newest.exists() is True
+    assert auto_evolve.prune_auto_reference_files(skill_dir, "demo", keep=-1) == []
+    assert newest.exists() is True
+
+    older = references / "curator-evolver-auto-demo-20260901-120000.md"
+    older.write_text("older spill", encoding="utf-8")
+    pruned = auto_evolve.prune_auto_reference_files(skill_dir, "demo", keep=1)
+
+    assert pruned == ["references/curator-evolver-auto-demo-20260901-120000.md"]
+    assert newest.exists() is True
+    assert older.exists() is False
+    assert handwritten.exists() is True
+
+
+def test_auto_evolve_config_defaults_reference_retention():
+    assert AutoEvolveConfig().max_reference_files == 5
+
+
+def test_apply_managed_block_replacement_is_literal_on_second_run():
+    """U15 / assessment P1: previews with group references must not crash.
+
+    Any skill that already carries a managed block made the next auto-run
+    pass crash with ``re.error: invalid group reference 1`` because the new
+    block was passed as a regex replacement template; evidence previews
+    legitimately contain ``\\1`` and ``\\g<name>`` spellings. A second run
+    with such a block must rewrite the block verbatim, treating it as data.
+    """
+
+    first = auto_evolve._apply_managed_block(
+        "# Demo\n",
+        "<!-- curator-evolver:auto:start -->\nfirst\n<!-- curator-evolver:auto:end -->",
+    )
+    assert "first" in first
+
+    gnarly = (
+        "<!-- curator-evolver:auto:start -->\n"
+        "repro: sed -E 's/(x)/\\1/' and \\g<boom> and $1 and \\\\2\n"
+        "<!-- curator-evolver:auto:end -->"
+    )
+
+    second = auto_evolve._apply_managed_block(first, gnarly)
+
+    assert "first" not in second
+    assert "repro: sed -E 's/(x)/\\1/' and \\g<boom> and $1 and \\\\2" in second
+
+    # And the end-to-end path: a preview containing a backreference that is
+    # later re-applied onto the already-managed skill must not raise.
+    managed_skill = "# Managed\n" + first
+    rewritten = auto_evolve._apply_managed_block(managed_skill, gnarly)
+    assert rewritten.startswith("# Managed\n")
+    assert rewritten.count(auto_evolve._START) == 1
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U17 (assessment P7): schedule grammar validation + unit escaping.
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+def test_u17_schedule_validation_accepts_canonical_and_oncalendar():
+    from hermes_curator_evolver.auto_evolve import _validated_on_calendar
+
+    assert _validated_on_calendar("daily") == "daily"
+    assert _validated_on_calendar("Daily") == "daily"
+    assert _validated_on_calendar("weekly") == "weekly"
+    assert _validated_on_calendar("Mon..Fri 09:00") == "Mon..Fri 09:00"
+    assert _validated_on_calendar("*-*-* 03:30:00") == "*-*-* 03:30:00"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "daily\nExecStartPost=/tmp/pwned.sh",
+        "daily\r\nUnit=evil.target",
+        "daily\n",
+        ";comment",
+        "daily;Reboot",
+        "  ",
+        "",
+    ],
+)
+def test_u17_schedule_validation_rejects_directive_injection(bad):
+    from hermes_curator_evolver.auto_evolve import _validated_on_calendar
+
+    with pytest.raises(ValueError):
+        _validated_on_calendar(bad)
+
+
+def test_u17_install_auto_timer_refuses_injected_schedule(tmp_path, monkeypatch):
+    from hermes_curator_evolver import auto_evolve
+
+    monkeypatch.setattr(auto_evolve, "_scheduler_backend", lambda: "systemd")
+    monkeypatch.setattr(auto_evolve, "_systemd_dir", lambda: tmp_path / "units")
+
+    with pytest.raises(ValueError, match="control character"):
+        auto_evolve.install_auto_timer(
+            schedule="daily\nExecStartPost=/tmp/pwned.sh", enable=True
+        )
+    # Nothing was written: the rejection happens before any file lands.
+    assert not (tmp_path / "units").exists() or not list((tmp_path / "units").iterdir())
+
+
+def test_u17_quote_systemd_arg_doubles_percent_specifiers():
+    from hermes_curator_evolver.auto_evolve import _quote_systemd_arg
+
+    assert _quote_systemd_arg("/tmp/pct%h") == "/tmp/pct%%h"
+    assert _quote_systemd_arg("plain") == "plain"
+    assert _quote_systemd_arg('quote"d') == '"quote\\"d"'
+    assert _quote_systemd_arg("has space") == '"has space"'
+    assert _quote_systemd_arg("") == '""'
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U7b: version single-sourcing across plugin surfaces.
+# ---------------------------------------------------------------------------
+
+
+def test_u7b_version_agrees_with_plugin_yaml():
+    import re
+    from pathlib import Path
+
+    from hermes_curator_evolver import __version__
+
+    manifest = Path(__file__).resolve().parent.parent / "plugin.yaml"
+    match = re.search(r"^version:\s*[\"']?([^\"'\n]+)[\"']?\s*$", manifest.read_text(), re.MULTILINE)
+    assert match, "plugin.yaml must carry a version"
+    assert __version__ == match.group(1).strip()
+
+
+def test_u7b_version_is_not_the_drifted_literal():
+    from hermes_curator_evolver import __version__
+
+    assert __version__ != "0.8.0"
+
+
+# ---------------------------------------------------------------------------
+# Roadmap Q8: bounded clamps warn instead of silently rewriting.
+# ---------------------------------------------------------------------------
+
+
+def test_q8_clamp_warns_naming_old_and_new_value(caplog):
+    import logging
+
+    from hermes_curator_evolver.auto_evolve import _bounded
+
+    with caplog.at_level(logging.WARNING, logger="hermes_curator_evolver.auto_evolve"):
+        assert _bounded(99999, minimum=1, maximum=3650, label="days") == 3650
+    assert any("clamped from 99999 to 3650" in rec.message for rec in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_curator_evolver.auto_evolve"):
+        assert _bounded(0, minimum=1, maximum=3650, label="days") == 1
+    assert any("clamped from 0 to 1" in rec.message for rec in caplog.records)
+
+
+def test_q8_in_range_value_does_not_warn(caplog):
+    import logging
+
+    from hermes_curator_evolver.auto_evolve import _bounded
+
+    with caplog.at_level(logging.WARNING, logger="hermes_curator_evolver.auto_evolve"):
+        assert _bounded(30, minimum=1, maximum=3650, label="days") == 30
+    assert not caplog.records
+
+
+def test_u17_quote_systemd_arg_rejects_control_characters():
+    from hermes_curator_evolver.auto_evolve import _quote_systemd_arg
+
+    for hostile in ["daily\nExecStartPost=/tmp/pwned.sh", "a\rb", "a\tb", "a\x00b"]:
+        with pytest.raises(ValueError, match="control characters"):
+            _quote_systemd_arg(hostile)
+
+
+def test_u17_install_rejects_control_characters_in_embedded_paths(tmp_path, monkeypatch):
+    from hermes_curator_evolver import auto_evolve
+
+    monkeypatch.setattr(auto_evolve, "_scheduler_backend", lambda: "systemd")
+    monkeypatch.setattr(auto_evolve, "_systemd_dir", lambda: tmp_path / "units")
+
+    with pytest.raises(ValueError, match="control characters"):
+        auto_evolve.install_auto_timer(
+            schedule="daily", skills_dir=str(tmp_path) + "\nExecStartPost=/tmp/pwned.sh"
+        )
+    assert not (tmp_path / "units").exists()

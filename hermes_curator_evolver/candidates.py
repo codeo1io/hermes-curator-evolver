@@ -14,8 +14,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .storage import MANAGE_TOOL_NAME
-
 CANDIDATE_TYPE_MEMORY = "memory"
 CANDIDATE_TYPE_SKILL_UPDATE = "skill_update"
 CANDIDATE_TYPE_SKILL_NEW = "skill_new"
@@ -90,14 +88,36 @@ _STEP_KEYWORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SHELL_COMMAND_PATTERN = re.compile(r"`[^`]{2,}`|\brun\s+`", re.IGNORECASE)
+_SHELL_SPAN_PATTERN = re.compile(r"`[^`]{2,}`")
+_LINE_DECORATION_PATTERN = re.compile(r"^(?:\d+[.)]|[-*+>|]|\$|#)\s*")
 _ZH_WORKFLOW_PATTERN = re.compile(
     r"(流程|步驟|SOP).{0,80}(先|再|最後).{0,160}(先|再|最後)", re.DOTALL
 )
 
-_ERROR_KEYWORD_PATTERN = re.compile(
-    r"\b(traceback|not[_\s-]found|exit\s+code\s+\d+|exit\s*=\s*[1-9]"
-    r"|nonzero|failed|size\s+cap|exceeded|stderr)\b",
+_FAILURE_KEYWORD_PATTERN = re.compile(
+    r"\b(traceback|not[_\s-]?found|exit\s+(?:code|status)\s+[1-9]\d*"
+    r"|exit(?:ed|ing)?(?:\s+with)?\s+(?:code|status)\s+[1-9]\d*|exit\s*=\s*[1-9]\d*"
+    r"|nonzero|(?<!0\s)failed|size\s+cap|exceeded)\b",
     re.IGNORECASE,
+)
+
+# Success-bearing count phrases that must clear a keyword hit: a report
+# saying zero things failed is a success report even though it contains the
+# word "failed" (assessment Q1: '0 failed, 12 passed' / 'grep: 0 failed' /
+# 'success: no tests failed' were classified as errors by the bare-keyword
+# scan).
+_SUCCESS_COUNT_PATTERN = re.compile(
+    r"\b0\s+failed\b|\bno\s+errors?\b|\bnothing\s+failed\b|\bno\s+(?:\w+\s+)?failed\b",
+    re.IGNORECASE,
+)
+
+# Structured failure/success vocabulary (assessment Q1 truth table).
+_EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
+_STATUS_FAILURE_WORDS = frozenset(
+    {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
+)
+_STATUS_SUCCESS_WORDS = frozenset(
+    {"ok", "success", "succeeded", "passed", "completed", "healthy"}
 )
 
 _PR_REF_PATTERN = re.compile(r"\bPR\s*#?\d+\b|\bpull[-\s]request\s*#?\d+\b", re.IGNORECASE)
@@ -172,18 +192,59 @@ def _is_safety_preference(text: str) -> bool:
     return False
 
 
+def _block_shell_spans(text: str) -> int:
+    """Count shell spans presented as standalone commands, not inline prose.
+
+    A span counts only when its line is (almost) nothing but the command -
+    optionally decorated with a list marker, step number, ``$`` or ``#`` -
+    so prose like ``I ran `git status` then `git diff``` provides sequence
+    evidence of zero. Procedural docs put commands on their own lines; that
+    is the command-sequence signal ``_looks_workflow`` requires (roadmap U2,
+    assessment finding F5).
+    """
+
+    count = 0
+    for line in text.splitlines():
+        stripped = _LINE_DECORATION_PATTERN.sub("", line.strip())
+        if not stripped:
+            continue
+        for match in _SHELL_SPAN_PATTERN.finditer(stripped):
+            remainder = (stripped[: match.start()] + stripped[match.end() :]).strip()
+            if not remainder or set(remainder) <= {"$", "#"}:
+                count += 1
+    return count
+
+
 def _looks_workflow(text: str) -> bool:
     if not text:
         return False
     numbered = len(_STEP_NUMBERED_PATTERN.findall(text)) >= 2
     keyword_hits = len(_STEP_KEYWORD_PATTERN.findall(text))
     shell_hits = len(_SHELL_COMMAND_PATTERN.findall(text))
+    block_shell_hits = _block_shell_spans(text)
     if _ZH_WORKFLOW_PATTERN.search(text):
         return True
-    return numbered or (keyword_hits >= 2 and shell_hits >= 1) or (shell_hits >= 2)
+    return numbered or (keyword_hits >= 2 and shell_hits >= 1) or (block_shell_hits >= 2)
 
 
 def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
+    """Classify failure from the U43 truth table: structured-first, never a bare keyword.
+
+    Structured payload fields are authoritative, in this order: an explicit
+    ``is_error`` record flag; a nonzero numeric exit status under any of
+    ``exit_code``/``returncode``/``code``; a truthy ``error``/``exception``;
+    ``ok``/``success`` ``False``; a ``status`` string from the failure
+    vocabulary. A zero exit status is an explicit success (it returns before
+    the text scan), as are ``ok``/``success`` ``True`` and success-status
+    strings when the exit status agrees. Only when no structured signal
+    decides does the keyword scan run — and it never matches a success
+    report: the failure pattern requires a nonzero ``exit code``/``status``,
+    the bare ``stderr`` key name is gone (assessment Q1:
+    ``{"stdout": "ok", "stderr": ""}`` was classified as an error by the
+    key name alone), and success count phrases (``0 failed``, ``no errors``)
+    clear a stray ``failed`` hit (``"0 failed, 12 passed"`` is a success).
+    """
+
     if bool(record.get("is_error")):
         return True
     try:
@@ -191,17 +252,68 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
     except json.JSONDecodeError:
         payload = None
     if isinstance(payload, dict):
-        exit_code = payload.get("exit_code")
-        if isinstance(exit_code, (int, float)) and int(exit_code) != 0:
+        # Truth table (roadmap U43, assessment Q1): every structured failure
+        # signal is honored first; explicit success signals clear the text
+        # scan only when the exit status agrees; a bare ``exit code 0``-style
+        # numeric success never matches the keyword fallback because the
+        # failure pattern requires a nonzero status word.
+        exit_code: int | None = None
+        for key in _EXIT_CODE_KEYS:
+            value = payload.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                exit_code = int(value)
+                break
+        if exit_code is not None and exit_code != 0:
             return True
         if payload.get("error") or payload.get("exception"):
             return True
-    tool = (record.get("tool_name") or "").lower()
-    if tool == MANAGE_TOOL_NAME and "cap" in text.lower():
-        return True
-    if _ERROR_KEYWORD_PATTERN.search(text):
-        return True
-    return False
+        if payload.get("ok") is False or payload.get("success") is False:
+            return True
+        status = payload.get("status")
+        if isinstance(status, str) and status.strip().lower() in _STATUS_FAILURE_WORDS:
+            return True
+        if exit_code == 0:
+            return False
+        if payload.get("ok") is True or payload.get("success") is True:
+            return False
+        if isinstance(status, str) and status.strip().lower() in _STATUS_SUCCESS_WORDS:
+            return False
+    return bool(
+        _FAILURE_KEYWORD_PATTERN.search(text) and not _SUCCESS_COUNT_PATTERN.search(text)
+    )
+
+
+def looks_like_error(result: Any) -> bool:
+    """Single error classifier for tool results (roadmap U28, truth table U43).
+
+    Ingest (:mod:`hermes_curator_evolver.storage`) and candidate mining
+    (:func:`classify_record`) must agree on what counts as an error, so both
+    call this one structured-first classifier. The U43 truth table:
+    ``exit_code``/``returncode``/``code`` nonzero → error, zero → success;
+    ``ok``/``success`` booleans honored; ``error``/``exception``/``status``
+    honored; the keyword scan runs only when no structured signal exists,
+    matches only failure-bearing phrases, and is cleared by success count
+    phrases — so ``"0 failed, 12 passed"``, ``{"stdout": "ok", "stderr": ""}``,
+    and ``"exit code 0"`` classify as success while ``{"returncode": 1}``,
+    ``{"code": 1}``, and ``{"ok": false}`` classify as failure (assessment
+    Q1, which reopened U28's unification with a defective table).
+    """
+
+    if isinstance(result, str):
+        return _is_tool_failure({}, result)
+    if isinstance(result, list):
+        # A list result is a batch of results: it is a failure exactly when
+        # any element is (an empty batch is not).
+        return any(looks_like_error(item) for item in result)
+    if isinstance(result, dict):
+        try:
+            text = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            text = str(result)
+        return _is_tool_failure({}, text)
+    if result is None:
+        return False
+    return _is_tool_failure({}, str(result))
 
 
 def _is_ephemeral(text: str) -> bool:
