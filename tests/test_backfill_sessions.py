@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_curator_evolver.backfill import (
+    _iter_state_sessions,
+    _parse_dt,
     backfill_sessions,
     default_sessions_dir,
     default_state_db_path,
@@ -516,7 +518,12 @@ def test_u36_limit_takes_the_newest_sessions_not_storage_order(tmp_path, monkeyp
 
     result = backfill_sessions(state_db=state_db, store=store, days=30, limit=2)
 
-    assert result["sessions_seen"] == 2
+    # U52/F24: ``sessions_seen`` counts every session examined during the
+    # metadata scan (all three rows here), not just the ones selected below
+    # the limit — the old value (2) was exactly the under-report the cycle-6
+    # assessment flagged.
+    assert result["sessions_seen"] == 3
+    assert result["sessions_selected"] == 2
     assert sorted(db.fetched) == ["s1", "s2"], db.fetched
     assert result["sessions_imported"] == 2
 
@@ -681,3 +688,104 @@ def test_u36_hostile_infinite_pagination_is_bounded_and_deduped(monkeypatch):
     assert len(seen) == len(set(seen)), seen
     assert "s-new" in seen
     assert db.n < 200  # bounded: did not walk every page forever
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U52 (assessment S3/F7): the metadata cap bounds the RESULT after
+# trusted-order paging, never the scan — and the counters tell the truth.
+# ---------------------------------------------------------------------------
+
+
+def test_u52_cap_binds_in_recency_order_on_a_10040_session_store(monkeypatch):
+    """Assessment F7's reproducer: 10,040 sessions, --limit 2.
+
+    The legacy cap (max(limit, 10_000)) bound the storage-order collection
+    window, so the importer walked 50 pages to fetch the oldest region
+    (yielding s9999/s9998) while the newest session s10039 was never read
+    and the summary reported sessions_skipped_old=9675 about the sessions
+    it actually wanted. The cap now bounds the selected result.
+    """
+    TOTAL = 10_040  # > the legacy 10,000 cap by 0.4%
+    # Deterministic epoch-second fixtures (parsed by the library's own
+    # ``_parse_dt``, which yields tz-aware datetimes for numeric input).
+    base_epoch = 1_893_456_000  # 2030-01-01T00:00:00Z
+    cutoff = _parse_dt(base_epoch - 365 * 86400)
+
+    class StorageOrderDB:
+        """Oldest-first pagination: an implementation detail, never trusted."""
+
+        def __init__(self):
+            self.pages = 0
+            self.fetched = []
+            self.rows = [
+                {
+                    "id": f"s{i}",
+                    "last_active": base_epoch - (TOTAL - i) * 86400,
+                }
+                for i in range(TOTAL)
+            ]
+
+        def search_sessions(self, limit=200, offset=0):
+            self.pages += 1
+            return self.rows[offset : offset + limit]
+
+        def get_messages(self, session_id, **kw):
+            self.fetched.append(session_id)
+            return [
+                {"role": "assistant", "content": f"msg for {session_id}"},
+                {"role": "user", "content": "hi"},
+            ]
+
+    db = StorageOrderDB()
+    stats: dict[str, int] = {}
+    yielded = [
+        d["id"] for d in _iter_state_sessions(db, limit=2, cutoff=cutoff, stats=stats)
+    ]
+
+    # The two NEWEST sessions, not two near-oldest.
+    assert yielded == ["s10039", "s10038"], yielded
+    assert "s10039" in db.fetched
+    # Bounded, honest paging: every distinct row is metadata-scanned once
+    # (the storage's own order cannot be trusted, so the whole store's ids
+    # are collected as metadata before the sort), but only 2 transcripts load.
+    assert db.pages == 51  # ceil(10040/200) = 50 full + 1 short: full metadata scan
+    assert len(db.fetched) == 2
+    assert stats["sessions_metadata_seen"] == TOTAL
+    assert stats["sessions_seen"] == TOTAL
+    assert stats["sessions_in_window"] == 365
+    assert stats["sessions_skipped_old"] == 9675  # actually old sessions, once
+    assert stats["sessions_selected"] == 2
+    assert "metadata_scan_truncated" not in stats
+
+
+def test_u52_runaway_bound_discloses_instead_of_walking_forever():
+    """R8's hostile fake (endless pages of fresh ids) still terminates.
+
+    The no-progress break handles shifting/repeat tails; a fake that mints
+    genuinely new ids forever is stopped by the last-resort bound, and the
+    truncation is disclosed through stats instead of silently dropping the
+    newest sessions.
+    """
+    base_epoch = 1_893_456_000  # 2030-01-01T00:00:00Z (deterministic fixture)
+
+    class InfiniteMintDB:
+        def __init__(self):
+            self.pages = 0
+
+        def search_sessions(self, limit=200, offset=0):
+            self.pages += 1
+            return [
+                {"id": f"mint-{offset + i}", "last_active": base_epoch - (i + 1) * 86400}
+                for i in range(limit)
+            ]
+
+        def get_messages(self, session_id, **kw):
+            return []
+
+    db = InfiniteMintDB()
+    stats: dict[str, int] = {}
+    ids = [d["id"] for d in _iter_state_sessions(db, limit=6, cutoff=None, stats=stats)]
+
+    assert len(ids) == len(set(ids)) == 6
+    assert stats["metadata_scan_truncated"] == 1
+    assert db.pages <= 151  # 3x the legacy cap / 200 rows, plus the final page
