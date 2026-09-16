@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from hermes_curator_evolver.guarded_apply import (
+    _build_verify_env,
     apply_guarded_patch,
     register_support_file_in_manifest,
     rollback_guarded_patch,
@@ -491,6 +492,18 @@ def test_rollback_refuses_backup_path_outside_manifest_directory(tmp_path):
     assert rollback["rolled_back"] is False
     assert rollback["reason"] == "unsafe-backup-path"
     assert target.read_text(encoding="utf-8") == "new\n"
+
+
+def test_verify_env_propagates_dynamic_loader_path(tmp_path, monkeypatch):
+    # Self-hosted CI runs shared-library Python builds (GitHub Actions
+    # tool-cache): the interpreter itself needs LD_LIBRARY_PATH to find
+    # libpythonX.Y.so. The verify env must forward it, or every verify
+    # subprocess dies with exit 127 before running any code (observed on
+    # the self-hosted runner pool 2026-09-16: 4 staged-verify tests failed
+    # `applied is True` purely from the stripped loader path).
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/nonexistent-loader-dir")
+    env = _build_verify_env()
+    assert env.get("LD_LIBRARY_PATH") == "/opt/nonexistent-loader-dir"
 
 
 def test_verify_command_receives_allowlisted_environment_only(tmp_path):

@@ -94,7 +94,19 @@ def _write_manifest(path: Path, data: dict[str, Any]) -> None:
     )
 
 
-_VERIFY_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "TERM", "LANG")
+_VERIFY_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TERM",
+    "LANG",
+    # Dynamic-loader path. Not a secret — same trust class as PATH. Needed
+    # wherever Python is a shared-library build (GitHub Actions tool-cache
+    # pythons, many distro pythons): without it the verify subprocess dies
+    # with exit 127 (libpythonX.Y.so not found) before running any code.
+    # Caught by test_verify_env_propagates_dynamic_loader_path.
+    "LD_LIBRARY_PATH",
+)
 
 
 def _build_verify_env(extra: dict[str, str] | None = None) -> dict[str, str]:
