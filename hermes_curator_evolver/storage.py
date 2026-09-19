@@ -113,6 +113,7 @@ _journal_mode_warned: set[str] = set()
 # ---------------------------------------------------------------------------
 _connection_lock = threading.Lock()
 _connections: dict[str, sqlite3.Connection] = {}
+_read_connections: dict[str, sqlite3.Connection] = {}
 _path_locks: dict[str, threading.RLock] = {}
 _atexit_hook_installed = False
 
@@ -121,8 +122,9 @@ def _close_cached_connections() -> None:
     """Close every warm connection at interpreter exit (best effort)."""
 
     with _connection_lock:
-        connections = list(_connections.values())
+        connections = list(_connections.values()) + list(_read_connections.values())
         _connections.clear()
+        _read_connections.clear()
     for connection in connections:
         try:
             connection.close()
@@ -217,15 +219,29 @@ def _json_dumps(value: Any, limit: int) -> str:
 
 
 def _extract_skill_name(tool_name: str, args: Any) -> str | None:
+    """Attribute a tool call to a skill through one shared vocabulary (U54).
+
+    Assessment S6 found two branches with different key vocabularies: the
+    skill tools (``skill_view`` and the manage tool) read only the singular
+    keys while every other tool also honored the plural ``skills`` list, so
+    ``skill_view({"skills": ["demo"]})`` lost attribution entirely —
+    starving exactly the skill tools this plugin exists to watch (the
+    ``min_evidence`` gate in :mod:`hermes_curator_evolver.auto_evolve`
+    consumes these counts). One entry point now reads the same keys for
+    every tool. ``tool_name`` is kept for interface stability and future
+    per-tool provenance only.
+    """
+
     if not isinstance(args, dict):
         return None
-    if tool_name in SKILL_TOOL_NAMES:
-        name = args.get("name") or args.get("skill") or args.get("skill_name")
-        return str(name) if name else None
+    name = args.get("name") or args.get("skill") or args.get("skill_name")
+    if name:
+        return str(name)
     skills = args.get("skills")
     if isinstance(skills, list) and skills:
         first = skills[0]
-        return str(first) if first else None
+        if first:
+            return str(first)
     return None
 
 
@@ -289,47 +305,118 @@ class EvidenceStore:
             return str(self.db_path)
 
     def connect(self) -> sqlite3.Connection:
-        """Return this path's warm connection, opening it single-flight (U45).
+        """Return this path's warm *writer* connection, opened single-flight (U45).
 
         The connection is cached per resolved path for the life of the
         process, registered for close-at-exit, and shared by every store
         instance over the same file. It is opened with
-        ``check_same_thread=False`` because hooks, backfill, and auto-run may
-        live on different threads; all use is serialized by the path lock the
-        write/read helpers below acquire, so no two threads ever interleave
-        transactions on the one connection.
+        ``check_same_thread=False`` because hooks, backfill, and auto-run
+        may live on different threads. Only the write helpers
+        (``_write_with_retry`` and the init/schema paths) may run statements
+        on it: their per-path lock serializes every use, so no two threads
+        ever interleave transactions on the one connection. READERS MUST NOT
+        TOUCH IT — a bare ``with conn:`` block would COMMIT or ROLL BACK
+        whatever transaction a writer thread has open. Readers use the
+        separate read-only connection from :meth:`_read_connection` (roadmap
+        U53), which can neither write nor end a transaction. PRAGMA setup
+        runs outside the global connection lock so a slow journal-mode
+        change never serializes unrelated paths (roadmap U53, assessment S5).
         """
 
         key = self._path_key()
         with _connection_lock:
             connection = _connections.get(key)
-            if connection is None:
-                connection = sqlite3.connect(
-                    self.db_path,
-                    timeout=_BUSY_TIMEOUT_MS / 1000,
-                    check_same_thread=False,
-                )
-                connection.row_factory = sqlite3.Row
-                _connections[key] = connection
-                _install_atexit_hook()
-                try:
-                    connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-                    self._apply_journal_mode(connection)
-                except sqlite3.Error:
-                    # A pragma failure must not strand a half-initialized
-                    # cached connection for the whole process.
-                    _connections.pop(key, None)
-                    connection.close()
-                    raise
+        if connection is not None:
             return connection
+        # Open and configure OUTSIDE the global lock (U53): PRAGMA setup
+        # (notably journal_mode) can take real time and must not hold the
+        # lock other paths need just to read their cache entry.
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=_BUSY_TIMEOUT_MS / 1000,
+            check_same_thread=False,
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            self._apply_journal_mode(connection)
+        except sqlite3.Error:
+            # A pragma failure must not publish a half-initialized cached
+            # connection: nothing was inserted into the cache, so closing
+            # the local connection is the whole cleanup.
+            connection.close()
+            raise
+        # Single-flight publish: a racing thread that opened its own
+        # connection loses, closes it, and adopts the cached winner — the
+        # cache always ends with exactly one connection per path.
+        with _connection_lock:
+            existing = _connections.setdefault(key, connection)
+        if existing is not connection:
+            try:
+                connection.close()
+            except sqlite3.Error:  # pragma: no cover - teardown best effort
+                pass
+            return existing
+        _install_atexit_hook()
+        return connection
 
-    def close(self) -> None:
-        """Close this path's warm connection (deterministic teardown)."""
+    def _read_connection(self) -> sqlite3.Connection:
+        """Return this path's cached read-only connection (roadmap U53).
+
+        Readers must never run on the warm writer connection: the legacy
+        ``with self.connect() as conn:`` readers bypassed the per-path lock
+        AND their ``with conn:`` block could COMMIT or ROLL BACK a writer
+        thread's open transaction (assessment S5/F6 — ``summary()``
+        completed while ``_path_lock`` was held). This connection is opened
+        ``mode=ro`` with ``PRAGMA query_only``, so it can neither write
+        nor end any transaction; concurrent reads on it are serialized by
+        SQLite itself and need no lock, which is why readers no longer
+        queue behind writers. A read-only open that fails (the file
+        vanished) is an environment failure and propagates. PRAGMA setup
+        runs outside the global connection lock (U53).
+        """
 
         key = self._path_key()
         with _connection_lock:
-            connection = _connections.pop(key, None)
+            connection = _read_connections.get(key)
         if connection is not None:
+            return connection
+        uri = f"{self.db_path.resolve(strict=False).as_uri()}?mode=ro"
+        connection = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=_BUSY_TIMEOUT_MS / 1000,
+            check_same_thread=False,
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA query_only=1")
+        except sqlite3.Error:
+            connection.close()
+            raise
+        with _connection_lock:
+            existing = _read_connections.setdefault(key, connection)
+        if existing is not connection:
+            try:
+                connection.close()
+            except sqlite3.Error:  # pragma: no cover - teardown best effort
+                pass
+            return existing
+        _install_atexit_hook()
+        return existing
+
+    def close(self) -> None:
+        """Close this path's warm connections (deterministic teardown)."""
+
+        key = self._path_key()
+        with _connection_lock:
+            connections = [
+                entry
+                for entry in (_connections.pop(key, None), _read_connections.pop(key, None))
+                if entry is not None
+            ]
+        for connection in connections:
             try:
                 connection.close()
             except sqlite3.Error:  # pragma: no cover - teardown best effort
@@ -538,54 +625,63 @@ class EvidenceStore:
         self._write_with_retry(_insert)
 
     def summary(self, *, days: int, skill: str | None = None) -> dict[str, Any]:
+        # U53: readers run on the path's read-only connection — never on the
+        # warm writer connection, whose open transactions a reader's implicit
+        # commit would destroy.
+        conn = self._read_connection()
         where = "created_at >= ?"
         params: list[Any] = [cutoff_iso(days)]
         if skill:
             where += " AND skill_name = ?"
             params.append(skill)
-        with self.connect() as conn:
-            tool_counts = conn.execute(
-                f"""
-                SELECT
-                    COUNT(*) AS tool_events,
-                    COALESCE(SUM(is_error), 0) AS error_events,
-                    COALESCE(SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END), 0)
-                        AS skill_events
-                FROM tool_events
-                WHERE {where}
-                """,
-                params,
-            ).fetchone()
-            turn_events = conn.execute(
-                "SELECT COUNT(*) AS count FROM turn_events WHERE created_at >= ?",
-                [cutoff_iso(days)],
-            ).fetchone()["count"]
-            session_events = conn.execute(
-                "SELECT COUNT(*) AS count FROM session_events WHERE created_at >= ?",
-                [cutoff_iso(days)],
-            ).fetchone()["count"]
-            skills = conn.execute(
-                f"""
-                SELECT skill_name, COUNT(*) AS event_count, COALESCE(SUM(is_error), 0) AS errors
-                FROM tool_events
-                WHERE {where} AND skill_name IS NOT NULL
-                GROUP BY skill_name
-                ORDER BY event_count DESC, skill_name ASC
-                LIMIT 20
-                """,
-                params,
-            ).fetchall()
-            tools = conn.execute(
-                f"""
-                SELECT tool_name, COUNT(*) AS event_count, COALESCE(SUM(is_error), 0) AS errors
-                FROM tool_events
-                WHERE {where}
-                GROUP BY tool_name
-                ORDER BY event_count DESC, tool_name ASC
-                LIMIT 20
-                """,
-                params,
-            ).fetchall()
+        tool_counts = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS tool_events,
+                COALESCE(SUM(is_error), 0) AS error_events,
+                COALESCE(SUM(CASE WHEN skill_name IS NOT NULL THEN 1 ELSE 0 END), 0)
+                    AS skill_events
+            FROM tool_events
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()
+        turn_events = conn.execute(
+            "SELECT COUNT(*) AS count FROM turn_events WHERE created_at >= ?",
+            [cutoff_iso(days)],
+        ).fetchone()["count"]
+        session_events = conn.execute(
+            "SELECT COUNT(*) AS count FROM session_events WHERE created_at >= ?",
+            [cutoff_iso(days)],
+        ).fetchone()["count"]
+        skills = conn.execute(
+            f"""
+            SELECT skill_name,
+                   COUNT(*) AS event_rows,
+                   COUNT(DISTINCT
+                       COALESCE(session_id, '') || ':' || COALESCE(task_id, '') || ':'
+                       || COALESCE(skill_name, '') || ':' || COALESCE(created_at, '')
+                   ) AS event_count,
+                   COALESCE(SUM(is_error), 0) AS errors
+            FROM tool_events
+            WHERE {where} AND skill_name IS NOT NULL
+            GROUP BY skill_name
+            ORDER BY event_count DESC, skill_name ASC
+            LIMIT 20
+            """,
+            params,
+        ).fetchall()
+        tools = conn.execute(
+            f"""
+            SELECT tool_name, COUNT(*) AS event_count, COALESCE(SUM(is_error), 0) AS errors
+            FROM tool_events
+            WHERE {where}
+            GROUP BY tool_name
+            ORDER BY event_count DESC, tool_name ASC
+            LIMIT 20
+            """,
+            params,
+        ).fetchall()
         return {
             "tool_events": int(tool_counts["tool_events"]),
             "error_events": int(tool_counts["error_events"]),
@@ -599,36 +695,38 @@ class EvidenceStore:
     def recent_tool_events(
         self, *, days: int, skill: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
+        # U53: read-only connection, no implicit-commit ``with`` block.
+        conn = self._read_connection()
         where = "created_at >= ?"
         params: list[Any] = [cutoff_iso(days)]
         if skill:
             where += " AND skill_name = ?"
             params.append(skill)
         params.append(limit)
-        with self.connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT created_at, session_id, task_id, tool_name, duration_ms,
-                       is_error, skill_name, args_json, result_preview
-                FROM tool_events
-                WHERE {where}
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
+        rows = conn.execute(
+            f"""
+            SELECT created_at, session_id, task_id, tool_name, duration_ms,
+                   is_error, skill_name, args_json, result_preview
+            FROM tool_events
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
         return [dict(row) for row in rows]
 
     def recent_turns(self, *, days: int, limit: int = 10) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT created_at, session_id, model, platform, user_preview, assistant_preview
-                FROM turn_events
-                WHERE created_at >= ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                [cutoff_iso(days), limit],
-            ).fetchall()
+        # U53: read-only connection, no implicit-commit ``with`` block.
+        conn = self._read_connection()
+        rows = conn.execute(
+            """
+            SELECT created_at, session_id, model, platform, user_preview, assistant_preview
+            FROM turn_events
+            WHERE created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [cutoff_iso(days), limit],
+        ).fetchall()
         return [dict(row) for row in rows]

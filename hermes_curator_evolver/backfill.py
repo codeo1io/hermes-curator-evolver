@@ -181,33 +181,50 @@ def _iter_state_sessions(
     """Yield current Hermes sessions newest-first, cutoff applied before transcripts.
 
     ``search_sessions`` pagination order is an implementation detail of the
-    host SessionDB and must not be trusted as recency order (roadmap U4/U36):
-    a storage that returns oldest-first would silently truncate every import
-    the moment the caller's cutoff loop sees one old session. Rows are
-    therefore collected as *metadata only*, sorted by session time on the
-    client, and only then are transcripts fetched — at most ``limit`` of the
-    newest sessions inside ``cutoff`` (assessment N2/N2b/N3: the cap used to
-    bind the storage-order collection window — so ``--limit 2`` could inspect
-    ``s1, s0`` while the newest session ``s2`` was never read — and every
-    transcript was fetched before the days cutoff ran, so a one-in-window
-    import read full history). Sessions older than ``cutoff`` are counted in
-    ``stats['sessions_skipped_old']`` and never fetched.
+    host SessionDB and must not be trusted as recency order (roadmap
+    U4/U36): a storage that returns oldest-first would silently truncate
+    every import the moment the caller's cutoff loop sees one old session.
+    Rows are therefore collected as *metadata only*, sorted by session time
+    on the client, and only then are transcripts fetched — at most ``limit``
+    of the newest sessions inside ``cutoff`` (assessment N2/N2b/N3: the cap
+    used to bind the storage-order collection window — so ``--limit 2``
+    could inspect ``s1, s0`` while the newest session ``s2`` was never
+    read — and every transcript was fetched before the days cutoff ran, so
+    a one-in-window import read full history).
+
+    Roadmap U52 (assessment S3/F7): the cap now bounds the *result*, never
+    the *scan*. The metadata scan runs until the storage stops returning
+    pages that add new sessions — an empty page, a short page, or a page of
+    already-seen ids (assessment R8's shifting/hostile fake) — or until a
+    generous last-resort runaway bound on distinct sessions is reached
+    (three times the legacy cap; when that binds it is recorded in
+    ``stats['metadata_scan_truncated']``, never silently). This is what
+    makes ``--limit 2`` on a 10,040-session store fetch the two NEWEST
+    sessions instead of two near-oldest ones. Bootstrap paths share this
+    iterator, so they share the same ordering guarantee.
+
+    Truthful counters (roadmap U52, assessment F24) are written to ``stats``
+    when provided: ``sessions_pages_scanned``, ``sessions_metadata_seen``
+    (distinct sessions examined), ``sessions_in_window``,
+    ``sessions_skipped_old`` (sessions actually older than the cutoff —
+    counted once, here, not pages walked), and ``sessions_selected``.
+    Sessions older than ``cutoff`` are counted in ``sessions_skipped_old``
+    and never fetched.
     """
 
     get_messages = session_db.get_messages
     include_compacted = _supports_compacted_history(get_messages)
     collected: list[tuple[datetime, dict[str, Any]]] = []
     seen_ids: set[str] = set()
-    # Metadata collection is capped so a pathological storage that never
-    # returns a short/empty page (shifting pages, an infinite tail) cannot
-    # spin the reader forever (assessment R8's hostile fake did exactly
-    # this). The cap never binds a real import below its own ``limit``.
-    metadata_cap = max(int(limit or 0), 10_000)
+    pages_scanned = 0
     offset = 0
-    while len(collected) < metadata_cap:
+    scan_truncated = False
+    while True:
         rows = list(session_db.search_sessions(limit=200, offset=offset) or [])
         if not rows:
             break
+        pages_scanned += 1
+        new_sessions = 0
         for row in rows:
             data = dict(row)
             session_id = str(data.get("id") or data.get("session_id") or "")
@@ -216,7 +233,21 @@ def _iter_state_sessions(
                 # reappears on a later page is the same import, not a new one.
                 seen_ids.add(session_id)
                 collected.append((_session_time(data), data))
+                new_sessions += 1
+        if new_sessions == 0:
+            # A page that added nothing new means every row was already
+            # seen: shifting pages or an infinite repeat tail (assessment
+            # R8). No forward progress is possible, so the scan is done.
+            break
         if len(rows) < 200:
+            break
+        # Last-resort runaway bound (roadmap U52): a storage that never
+        # returns an empty/short/repeat page and keeps minting new ids
+        # forever cannot be walked to the end. Three times the legacy
+        # 10,000-session cap, so it only binds where the old cap did AND
+        # the store kept growing past it; binding is disclosed in stats.
+        if len(seen_ids) >= max(int(limit or 0), 10_000) * 3:
+            scan_truncated = True
             break
         offset += len(rows)
     # Trusted order: sort by the session's own time, newest first, and only
@@ -234,9 +265,36 @@ def _iter_state_sessions(
             break
         in_window.append((session_dt, data))
     # The cap now binds the newest in-window sessions, not the storage-order
-    # collection window (assessment N2/N2b).
+    # collection window (assessment N2/N2b/S3): the RESULT is capped, never
+    # the scan above.
     selected = in_window if limit is None or limit <= 0 else in_window[:limit]
+    if stats is not None:
+        # Truthful accounting (roadmap U52, assessment F24): these count
+        # what actually happened during THIS scan — pages walked, distinct
+        # metadata rows examined, sessions inside the cutoff, sessions
+        # actually older than it, and how many were selected for import.
+        # The old code folded only the old tail into ``sessions_seen`` and
+        # let in-window-but-unselected sessions vanish from every counter.
+        stats["sessions_pages_scanned"] = stats.get("sessions_pages_scanned", 0) + pages_scanned
+        stats["sessions_metadata_seen"] = stats.get("sessions_metadata_seen", 0) + len(collected)
+        stats["sessions_seen"] = stats.get("sessions_seen", 0) + len(collected)
+        stats["sessions_in_window"] = stats.get("sessions_in_window", 0) + len(in_window)
+        stats["sessions_skipped_old"] = stats.get("sessions_skipped_old", 0) + remaining_old
+        stats["sessions_selected"] = stats.get("sessions_selected", 0) + len(selected)
+        if scan_truncated:
+            stats["metadata_scan_truncated"] = 1
+    last_dt: datetime | None = None
     for _session_dt, data in selected:
+        # Monotonicity assertion (roadmap U52): the trusted order handed to
+        # callers must be strictly newest-first — every yielded session is
+        # at least as old as the one yielded before it.
+        if last_dt is not None and _session_dt > last_dt:
+            raise AssertionError(
+                "_iter_state_sessions order invariant broken: "
+                f"{data.get('id')!r}({_session_dt}) is newer than the "
+                f"previously yielded session ({last_dt})"
+            )
+        last_dt = _session_dt
         session_id = str(data.get("id") or data.get("session_id") or "")
         try:
             if include_compacted:
@@ -250,9 +308,6 @@ def _iter_state_sessions(
             data["messages"] = []
             data["transcript_error"] = f"{type(exc).__name__}: {exc}"
         yield data
-    if remaining_old and stats is not None:
-        stats["sessions_skipped_old"] = stats.get("sessions_skipped_old", 0) + remaining_old
-        stats["sessions_seen"] = stats.get("sessions_seen", 0) + remaining_old
 
 
 def _session_time(data: dict[str, Any], fallback: datetime | None = None) -> datetime:
@@ -405,6 +460,10 @@ def backfill_sessions(
         "days": bounded_days,
         "limit": limit,
         "sessions_seen": 0,
+        "sessions_metadata_seen": 0,
+        "sessions_pages_scanned": 0,
+        "sessions_in_window": 0,
+        "sessions_selected": 0,
         "sessions_imported": 0,
         "sessions_skipped_old": 0,
         "sessions_failed": 0,
@@ -427,7 +486,12 @@ def backfill_sessions(
             return result
         try:
             for data in _iter_state_sessions(session_db, limit, cutoff, result):
-                result["sessions_seen"] += 1
+                # ``sessions_seen`` is owned by the iterator for state-db
+                # imports (roadmap U52/F24): it counts every distinct
+                # session examined during the metadata scan, so the summary
+                # cannot under-report on stores larger than the import
+                # limit. The legacy-dump branch below keeps its per-file
+                # counting, which is already "everything examined".
                 if data.get("transcript_error"):
                     result["sessions_failed"] += 1
                     result["last_session_error"] = (
@@ -436,9 +500,6 @@ def backfill_sessions(
                     continue
                 try:
                     session_dt = _session_time(data)
-                    if session_dt < cutoff:
-                        result["sessions_skipped_old"] += 1
-                        continue
                     _import_session_data(
                         data,
                         evidence=evidence,

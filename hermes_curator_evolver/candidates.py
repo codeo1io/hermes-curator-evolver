@@ -97,9 +97,23 @@ _ZH_WORKFLOW_PATTERN = re.compile(
 _FAILURE_KEYWORD_PATTERN = re.compile(
     r"\b(traceback|not[_\s-]?found|exit\s+(?:code|status)\s+[1-9]\d*"
     r"|exit(?:ed|ing)?(?:\s+with)?\s+(?:code|status)\s+[1-9]\d*|exit\s*=\s*[1-9]\d*"
-    r"|nonzero|(?<!0\s)failed|size\s+cap|exceeded)\b",
+    r"|nonzero|failed|size\s+cap|exceeded)\b",
     re.IGNORECASE,
 )
+
+# Paired-count truth (roadmap U51, assessment S1): ``N failed`` is a
+# failure for every N > 0 at ANY digit width — the cycle-5 negative
+# lookbehind cleared every count ending in a zero ("10 failed",
+# "100 failed"). Zero-count reports ("0 failed") are success phrases and
+# are recognized by the count parse below, not by regex lookbehind tricks.
+_FAILURE_COUNT_PATTERN = re.compile(r"(\d+)\s+failed\b", re.IGNORECASE)
+
+# Success-phrase scoping (roadmap U51, assessment S4): a success phrase
+# clears only the failure keywords that share its clause (line, sentence,
+# or semicolon-separated segment) — "no errors" on a different line than
+# "deploy failed: connection refused" is a different clause's truth and
+# must not erase the failure.
+_CLAUSE_SPLIT_PATTERN = re.compile(r"[;\n；]|(?<=[.!?。！？])\s+")
 
 # Success-bearing count phrases that must clear a keyword hit: a report
 # saying zero things failed is a success report even though it contains the
@@ -113,6 +127,12 @@ _SUCCESS_COUNT_PATTERN = re.compile(
 
 # Structured failure/success vocabulary (assessment Q1 truth table).
 _EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
+# In-band success statuses for the ambiguous generic ``code`` key
+# (roadmap U51, assessment S2): tool wrappers store HTTP statuses in
+# ``code`` verbatim, so these nonzero values are NOT process failures.
+# ``exit_code``/``returncode`` are unambiguous exit keys and keep strict
+# nonzero-is-failure semantics.
+_HTTP_SUCCESS_CODES = frozenset({200, 201, 202, 204})
 _STATUS_FAILURE_WORDS = frozenset(
     {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
 )
@@ -252,18 +272,39 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
     except json.JSONDecodeError:
         payload = None
     if isinstance(payload, dict):
-        # Truth table (roadmap U43, assessment Q1): every structured failure
-        # signal is honored first; explicit success signals clear the text
-        # scan only when the exit status agrees; a bare ``exit code 0``-style
-        # numeric success never matches the keyword fallback because the
-        # failure pattern requires a nonzero status word.
+        # Truth table (roadmap U43/U51, assessments Q1+S1/S2/S4/S5): every
+        # structured failure signal is honored first; explicit success
+        # signals clear the text scan only when the exit status agrees; a
+        # bare ``exit code 0``-style numeric success never matches the
+        # keyword fallback because the failure pattern requires a nonzero
+        # status word. The generic ``code`` key is ambiguous — tool wrappers
+        # store HTTP statuses in it verbatim — so a nonzero value there is
+        # NOT a process failure when it is a recognized in-band success
+        # status and no explicit failure field exists (S2);
+        # ``exit_code``/``returncode`` keep strict exit semantics.
         exit_code: int | None = None
+        exit_code_key: str | None = None
         for key in _EXIT_CODE_KEYS:
             value = payload.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 exit_code = int(value)
+                exit_code_key = key
                 break
-        if exit_code is not None and exit_code != 0:
+        explicit_failure = bool(
+            payload.get("error")
+            or payload.get("exception")
+            or payload.get("ok") is False
+            or payload.get("success") is False
+            or (
+                isinstance(payload.get("status"), str)
+                and payload["status"].strip().lower() in _STATUS_FAILURE_WORDS
+            )
+        )
+        if exit_code is not None and exit_code != 0 and not (
+            exit_code_key == "code"
+            and exit_code in _HTTP_SUCCESS_CODES
+            and not explicit_failure
+        ):
             return True
         if payload.get("error") or payload.get("exception"):
             return True
@@ -278,25 +319,56 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
             return False
         if isinstance(status, str) and status.strip().lower() in _STATUS_SUCCESS_WORDS:
             return False
-    return bool(
-        _FAILURE_KEYWORD_PATTERN.search(text) and not _SUCCESS_COUNT_PATTERN.search(text)
-    )
+    return _text_bears_failure(text)
+
+
+def _text_bears_failure(text: str) -> bool:
+    """Clause-scoped keyword scan of a free-text payload (roadmap U51).
+
+    The payload is split into clauses (lines, sentences, semicolon
+    segments); a clause is failure-bearing when it carries a failure
+    keyword and no same-clause success phrase. A clause with explicit
+    ``N failed`` counts is a failure exactly when any N > 0 — every digit
+    width, with or without a paired passing count (assessment S1) — and
+    ``"0 failed"`` clauses are success reports. A success phrase in a
+    DIFFERENT clause never clears a failing clause (assessment S4:
+    "no errors" on another line must not erase "deploy failed").
+    """
+
+    for clause in _CLAUSE_SPLIT_PATTERN.split(text):
+        if not _FAILURE_KEYWORD_PATTERN.search(clause):
+            continue
+        counts = [int(count) for count in _FAILURE_COUNT_PATTERN.findall(clause)]
+        if counts:
+            if any(count > 0 for count in counts):
+                return True
+            continue  # every explicit count is zero: a success report
+        if not _SUCCESS_COUNT_PATTERN.search(clause):
+            return True
+    return False
 
 
 def looks_like_error(result: Any) -> bool:
-    """Single error classifier for tool results (roadmap U28, truth table U43).
+    """Single error classifier for tool results (roadmap U28, truth table U43/U51).
 
     Ingest (:mod:`hermes_curator_evolver.storage`) and candidate mining
     (:func:`classify_record`) must agree on what counts as an error, so both
-    call this one structured-first classifier. The U43 truth table:
-    ``exit_code``/``returncode``/``code`` nonzero → error, zero → success;
-    ``ok``/``success`` booleans honored; ``error``/``exception``/``status``
-    honored; the keyword scan runs only when no structured signal exists,
-    matches only failure-bearing phrases, and is cleared by success count
-    phrases — so ``"0 failed, 12 passed"``, ``{"stdout": "ok", "stderr": ""}``,
-    and ``"exit code 0"`` classify as success while ``{"returncode": 1}``,
-    ``{"code": 1}``, and ``{"ok": false}`` classify as failure (assessment
-    Q1, which reopened U28's unification with a defective table).
+    call this one structured-first classifier. The U43/U51 truth table:
+    ``exit_code``/``returncode``/``code`` nonzero → error, zero → success —
+    but explicit failure fields (``error``, ``exception``, ``ok``/``success``
+    false, ``status`` failure word) outrank a zero exit (assessment S5: the
+    code checks them before the zero-exit return and tests pin that order;
+    the old docstring claimed "zero → success" and was the defect); a
+    nonzero ``code`` value that is a recognized in-band HTTP success status
+    (200/201/202/204) with no failure field is not an error (assessment S2:
+    the generic ``code`` key is ambiguous, unlike ``exit_code``/
+    ``returncode``); the keyword scan runs only when no structured verdict
+    exists, is scoped per clause, and binds ``N failed`` counts at every
+    digit width — so ``"0 failed, 12 passed"``, ``"success: no tests
+    failed"``, ``{"stdout": "ok", "stderr": ""}``, ``"exit code 0"``, and
+    ``{"code": 200}`` classify as success while ``"10 failed, 2 passed"``,
+    ``{"returncode": 1}``, ``{"code": 1}``, and ``{"ok": false}`` classify
+    as failure (assessments Q1/S1/S2, which reopened U43's table twice).
     """
 
     if isinstance(result, str):

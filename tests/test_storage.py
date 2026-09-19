@@ -444,3 +444,163 @@ def test_u46_steady_state_schema_probe_is_cheap_and_stable(tmp_path):
     store.init_db()
     assert store._schema_ready() is True
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U51 (assessment S2/F18): an HTTP-shaped success stored through the
+# generic ``code`` key must never poison the append-only error_events history.
+# ---------------------------------------------------------------------------
+
+
+def test_u51_http_success_code_never_poisons_error_events(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.sqlite")
+    for index in range(3):
+        store.record_tool_call(
+            tool_name="http_probe",
+            args={"url": f"https://example.test/{index}"},
+            result={"code": 200, "body": "OK"},
+        )
+    summary = store.summary(days=1)
+    assert summary["tool_events"] == 3
+    assert summary["error_events"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U53 (assessment S5/F6): readers run on a separate read-only
+# connection — they neither queue behind the writer's path lock nor touch
+# (and thereby commit/rollback) the warm writer connection's open
+# transaction.
+# ---------------------------------------------------------------------------
+
+
+def test_u53_reader_runs_on_its_own_read_only_connection_under_a_held_lock(tmp_path):
+    import threading
+    import time
+
+    store = EvidenceStore(tmp_path / "evidence.sqlite")
+    store.record_tool_call(tool_name="t", args={}, result="ok", session_id="s")
+    warm = store.connect()
+    reader_conn = store._read_connection()
+
+    # The reader is a different connection object, and it cannot write.
+    assert reader_conn is not warm
+    with pytest.raises(sqlite3.OperationalError):
+        reader_conn.execute("DELETE FROM tool_events")
+
+    # Assessment F6: summary() used to be fine here by accident (it bypassed
+    # the lock AND shared the writer connection). Under the U53 contract it
+    # completes because it owns a read-only connection — and that is now the
+    # documented guarantee, not an accident.
+    completed = []
+
+    def _timed_summary():
+        start = time.time()
+        store.summary(days=1)
+        completed.append(round(time.time() - start, 3))
+
+    with store._path_lock():  # simulate an in-process writer holding the lock
+        thread = threading.Thread(target=_timed_summary, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+    assert completed, "reader deadlocked behind the writer's path lock"
+
+    # recent_* readers share the same contract.
+    assert store.recent_tool_events(days=1) or store.recent_tool_events(days=1) == []
+    store.recent_turns(days=1)
+    store.close()
+
+
+def test_u53_reader_never_commits_or_rolls_back_a_writers_transaction(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.sqlite")
+    store.record_tool_call(
+        tool_name="seed", args={}, result="ok", session_id="s", task_id="seed"
+    )
+    conn = store.connect()
+    with store._path_lock():
+        # An open, uncommitted writer transaction on the warm connection...
+        conn.execute(
+            """
+            INSERT INTO tool_events
+                (created_at, session_id, task_id, tool_name, is_error, args_json, result_preview)
+            VALUES ('2030-01-01T00:00:00', 's', 'open-txn', 'midflight', 0, '{}', 'uncommitted')
+            """
+        )
+        # ...while a reader runs. The legacy ``with self.connect() as conn:``
+        # reader COMMITted this transaction as a side effect of its block
+        # exit; the read-only connection cannot.
+        mid = store.summary(days=99999)
+        # Snapshot isolation: the read-only connection sees only committed
+        # data — the uncommitted row is invisible to the reader.
+        assert mid["tool_events"] == 1
+        conn.rollback()
+    assert store.summary(days=99999)["tool_events"] == 1
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# Roadmap U54 (assessment S6): symmetric skill attribution. One shared
+# extraction vocabulary for every tool, and skills[].event_count counts
+# attributed actions — a single lookup surfaced through two differently
+# tagged events is ONE action, while real repeated usage still counts.
+# ---------------------------------------------------------------------------
+
+
+def test_u54_skill_attribution_is_symmetric_across_all_tools():
+    from hermes_curator_evolver.storage import _extract_skill_name
+
+    # S6 asymmetry: the skill tools used to read only the singular keys.
+    assert _extract_skill_name("skill_view", {"skills": ["demo-skill"]}) == "demo-skill"
+    assert _extract_skill_name("read_file", {"skills": ["demo-skill"]}) == "demo-skill"
+    assert _extract_skill_name("skill_view", {"name": "demo-skill"}) == "demo-skill"
+    assert _extract_skill_name("skill_view", {"skill": "demo-skill"}) == "demo-skill"
+    assert _extract_skill_name("skill_view", {"skill_name": "demo-skill"}) == "demo-skill"
+    assert _extract_skill_name("Read", {"file_path": "/x/SKILL.md"}) is None
+    assert _extract_skill_name("skill_view", "not-a-dict") is None
+    assert _extract_skill_name("skill_view", {}) is None
+
+
+def test_u54_event_count_counts_actions_not_event_rows(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence.sqlite")
+    # One underlying lookup surfaced through two differently-tagged events
+    # (same session, same task, same second) is ONE attributed action.
+    store.record_tool_call(
+        tool_name="read_file",
+        args={"skills": ["demo-skill"]},
+        result="ok",
+        session_id="s",
+        task_id="t",
+    )
+    store.record_tool_call(
+        tool_name="skill_view",
+        args={"skills": ["demo-skill"]},
+        result="ok",
+        session_id="s",
+        task_id="t",
+    )
+    summary = store.summary(days=1)
+    assert summary["skill_events"] == 2  # raw event rows stay visible
+    skills = {row["skill_name"]: row for row in summary["skills"]}
+    assert skills["demo-skill"]["event_rows"] == 2
+    assert skills["demo-skill"]["event_count"] == 1
+
+    # Real repeated usage — distinct actions — still counts.
+    store.record_tool_call(
+        tool_name="skill_view",
+        args={"name": "demo-skill"},
+        result="ok",
+        session_id="s",
+        task_id="t2",
+        created_at="2030-01-02T00:00:00",
+    )
+    store.record_tool_call(
+        tool_name="skill_view",
+        args={"name": "demo-skill"},
+        result="ok",
+        session_id="s2",
+        task_id="t3",
+        created_at="2030-01-03T00:00:00",
+    )
+    skills = {row["skill_name"]: row for row in store.summary(days=1)["skills"]}
+    assert skills["demo-skill"]["event_rows"] == 4
+    assert skills["demo-skill"]["event_count"] == 3
+    store.close()
