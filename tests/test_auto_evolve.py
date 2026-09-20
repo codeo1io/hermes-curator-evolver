@@ -1302,3 +1302,43 @@ def test_u17_install_rejects_control_characters_in_embedded_paths(tmp_path, monk
             schedule="daily", skills_dir=str(tmp_path) + "\nExecStartPost=/tmp/pwned.sh"
         )
     assert not (tmp_path / "units").exists()
+
+
+def test_u68_burst_events_satisfy_min_evidence(tmp_path):
+    """Pass-7 N2 (roadmap U68): bursts count individually at eligibility.
+
+    Three same-session/same-task/same-second hook events for one skill are
+    three attributed actions: the skill clears min_evidence=2 and lands in
+    _eligible_skill_rows. Cycle-6's DISTINCT tuple collapsed them to one
+    action and starved the gate.
+    """
+    from hermes_curator_evolver.auto_evolve import _eligible_skill_rows
+
+    store = EvidenceStore(tmp_path / "evidence.sqlite")
+    for _ in range(3):
+        store.record_tool_call(
+            tool_name="skill_view",
+            args={"name": "demo-skill"},
+            result="ok",
+            session_id="s",
+            task_id="t",  # same task, same second — the burst shape
+        )
+    report = {"summary": store.summary(days=1)}
+    rows = _eligible_skill_rows(report, min_evidence=2)
+    assert [row["skill_name"] for row in rows] == ["demo-skill"]
+    assert rows[0]["event_count"] == 3
+    assert rows[0]["event_rows"] == 3
+
+    # Control: a single action stays below the gate.
+    store2 = EvidenceStore(tmp_path / "evidence2.sqlite")
+    store2.record_tool_call(
+        tool_name="skill_view",
+        args={"name": "demo-skill"},
+        result="ok",
+        session_id="s",
+        task_id="t",
+    )
+    report2 = {"summary": store2.summary(days=1)}
+    assert _eligible_skill_rows(report2, min_evidence=2) == []
+    store.close()
+    store2.close()

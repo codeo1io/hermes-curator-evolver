@@ -789,3 +789,86 @@ def test_u52_runaway_bound_discloses_instead_of_walking_forever():
     assert len(ids) == len(set(ids)) == 6
     assert stats["metadata_scan_truncated"] == 1
     assert db.pages <= 151  # 3x the legacy cap / 200 rows, plus the final page
+
+
+def test_u67_backfill_text_output_prints_every_truthful_counter(capsys, monkeypatch, tmp_path):
+    """Pass-7 N5 (roadmap U67): the human summary must not hide counters.
+
+    The JSON carried sessions_metadata_seen / sessions_pages_scanned /
+    sessions_in_window / sessions_selected while the text summary printed
+    neither them nor the metadata_scan_truncated runaway-bound flag — a
+    reader of the human output could not see a truncated scan.
+    """
+    from hermes_curator_evolver import cli
+
+    fake = {
+        "source_type": "state_db",
+        "source_path": str(tmp_path / "state.db"),
+        "db_path": str(tmp_path / "evidence.sqlite"),
+        "sessions_seen": 500,
+        "sessions_metadata_seen": 500,
+        "sessions_pages_scanned": 7,
+        "sessions_in_window": 420,
+        "sessions_selected": 30,
+        "sessions_imported": 30,
+        "sessions_skipped_old": 80,
+        "sessions_failed": 0,
+        "files_failed": 0,
+        "tool_events_imported": 3,
+        "turn_events_imported": 1,
+        "session_events_imported": 1,
+        "metadata_scan_truncated": 1,
+    }
+    monkeypatch.setattr(cli, "backfill_sessions", lambda **kwargs: fake)
+    from hermes_curator_evolver.__main__ import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["backfill-sessions", "--sessions-dir", str(tmp_path), "--format", "text"]
+    )
+    cli.handle_cli(args)
+    out = capsys.readouterr().out
+    for line in (
+        "Sessions seen: 500",
+        "Sessions metadata seen: 500",
+        "Sessions pages scanned: 7",
+        "Sessions in window: 420",
+        "Sessions selected: 30",
+        "Sessions imported: 30",
+        "Skipped old sessions: 80",
+        "Failed files: 0",
+    ):
+        assert line in out, line
+    assert "Metadata scan truncated: yes" in out
+
+
+def test_u67_backfill_text_output_stays_silent_without_truncation(capsys, monkeypatch, tmp_path):
+    from hermes_curator_evolver import cli
+
+    fake = {
+        "source_type": "sessions_dir",
+        "source_path": str(tmp_path),
+        "db_path": str(tmp_path / "evidence.sqlite"),
+        "sessions_seen": 1,
+        "sessions_metadata_seen": 1,
+        "sessions_pages_scanned": 1,
+        "sessions_in_window": 1,
+        "sessions_selected": 1,
+        "sessions_imported": 1,
+        "sessions_skipped_old": 0,
+        "files_failed": 0,
+        "tool_events_imported": 0,
+        "turn_events_imported": 0,
+        "session_events_imported": 0,
+    }
+    monkeypatch.setattr(cli, "backfill_sessions", lambda **kwargs: fake)
+    from hermes_curator_evolver.__main__ import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["backfill-sessions", "--sessions-dir", str(tmp_path), "--format", "text"]
+    )
+    cli.handle_cli(args)
+    out = capsys.readouterr().out
+    assert "Sessions metadata seen: 1" in out
+    assert "Metadata scan truncated" not in out

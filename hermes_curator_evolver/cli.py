@@ -888,8 +888,21 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(f"Source: {result['source_type']} ({result['source_path']})")
             print(f"DB: {result['db_path']}")
             print(f"Sessions seen: {result['sessions_seen']}")
+            # Pass-7 N5 (roadmap U67): the human summary hid the honest
+            # metadata-scan counters the JSON carried — every truthful
+            # counter prints, and truncation is never silent.
+            print(f"Sessions metadata seen: {result.get('sessions_metadata_seen', 0)}")
+            print(f"Sessions pages scanned: {result.get('sessions_pages_scanned', 0)}")
+            print(f"Sessions in window: {result.get('sessions_in_window', 0)}")
+            print(f"Sessions selected: {result.get('sessions_selected', 0)}")
             print(f"Sessions imported: {result['sessions_imported']}")
             print(f"Skipped old sessions: {result['sessions_skipped_old']}")
+            if result.get("metadata_scan_truncated"):
+                print(
+                    "Metadata scan truncated: yes (distinct-session runaway"
+                    " bound reached — the scan stopped early; totals may"
+                    " under-report; rerun with a tighter --days or --limit)"
+                )
             # Assessment N7: failed sessions were invisible in the human
             # summary (json only) — surface the count and the last reason.
             if result.get("sessions_failed"):
