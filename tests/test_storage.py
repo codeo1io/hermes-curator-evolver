@@ -559,10 +559,29 @@ def test_u54_skill_attribution_is_symmetric_across_all_tools():
     assert _extract_skill_name("skill_view", {}) is None
 
 
-def test_u54_event_count_counts_actions_not_event_rows(tmp_path):
+def test_u68_event_count_counts_every_ingested_action(tmp_path):
     store = EvidenceStore(tmp_path / "evidence.sqlite")
-    # One underlying lookup surfaced through two differently-tagged events
-    # (same session, same task, same second) is ONE attributed action.
+    # Pass-7 N2 (roadmap U68): the cycle-6 DISTINCT tuple collapsed
+    # same-second bursts to one "attributed action", starving
+    # min_evidence for exactly the parallel-tool-call shape. Every
+    # ingested row is a distinct action — a 3-call same-second burst of
+    # one skill counts three times.
+    for _ in range(3):
+        store.record_tool_call(
+            tool_name="skill_view",
+            args={"name": "demo-skill"},
+            result="ok",
+            session_id="s",
+            task_id="t",
+        )
+    summary = store.summary(days=1)
+    assert summary["skill_events"] == 3
+    skills = {row["skill_name"]: row for row in summary["skills"]}
+    assert skills["demo-skill"]["event_rows"] == 3
+    assert skills["demo-skill"]["event_count"] == 3
+
+    # The cycle-6 two-tool case (one lookup surfaced through read_file +
+    # skill_view in the same second) now also counts both actions.
     store.record_tool_call(
         tool_name="read_file",
         args={"skills": ["demo-skill"]},
@@ -577,13 +596,12 @@ def test_u54_event_count_counts_actions_not_event_rows(tmp_path):
         session_id="s",
         task_id="t",
     )
-    summary = store.summary(days=1)
-    assert summary["skill_events"] == 2  # raw event rows stay visible
-    skills = {row["skill_name"]: row for row in summary["skills"]}
-    assert skills["demo-skill"]["event_rows"] == 2
-    assert skills["demo-skill"]["event_count"] == 1
+    skills = {row["skill_name"]: row for row in store.summary(days=1)["skills"]}
+    assert skills["demo-skill"]["event_rows"] == 5
+    assert skills["demo-skill"]["event_count"] == 5
 
-    # Real repeated usage — distinct actions — still counts.
+    # Real repeated usage across sessions/days — distinct actions — each
+    # still counts individually.
     store.record_tool_call(
         tool_name="skill_view",
         args={"name": "demo-skill"},
@@ -601,6 +619,6 @@ def test_u54_event_count_counts_actions_not_event_rows(tmp_path):
         created_at="2030-01-03T00:00:00",
     )
     skills = {row["skill_name"]: row for row in store.summary(days=1)["skills"]}
-    assert skills["demo-skill"]["event_rows"] == 4
-    assert skills["demo-skill"]["event_count"] == 3
+    assert skills["demo-skill"]["event_rows"] == 7
+    assert skills["demo-skill"]["event_count"] == 7
     store.close()

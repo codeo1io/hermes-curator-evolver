@@ -101,19 +101,43 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Paired-count truth (roadmap U51, assessment S1): ``N failed`` is a
-# failure for every N > 0 at ANY digit width — the cycle-5 negative
-# lookbehind cleared every count ending in a zero ("10 failed",
-# "100 failed"). Zero-count reports ("0 failed") are success phrases and
-# are recognized by the count parse below, not by regex lookbehind tricks.
-_FAILURE_COUNT_PATTERN = re.compile(r"(\d+)\s+failed\b", re.IGNORECASE)
+# Paired-count truth (roadmap U51/U67, assessments S1 + N1): ``N failed``
+# is a failure for every N > 0 at ANY digit width and with ANY digit
+# grouping — the cycle-5 lookbehind cleared every count ending in a zero
+# ("10 failed"), and the cycle-6 ``(\d+)`` capture bound only the trailing
+# group of comma-formatted counts ("1,000 failed" read as 000 → success,
+# pass-7 N1). The pattern therefore accepts plain integers, comma-grouped
+# thousands, and — per the format-matrix rule L15 (KTD31), which the
+# independent review found governing (finding 1) — EVERY other digit-
+# grouping separator: ``10.000``, ``10 000``, ``10_000`` carry the same
+# magnitude as ``1,000``, and malformed groups ("10,00") are accepted
+# deliberately, because for failure detection a miss on failure-shaped
+# text is worse than a hit on an unusual format. The caller strips ALL
+# separators before the int() so every grouping parses at true magnitude
+# ("2,048 failed" stays a failure at 2048). Zero-count reports
+# ("0 failed") are success phrases handled by the count parse, not
+# lookbehind tricks.
+_FAILURE_COUNT_PATTERN = re.compile(
+    r"(\d+(?:[,. _]\d+)+|\d+)\s+failed\b", re.IGNORECASE
+)
 
-# Success-phrase scoping (roadmap U51, assessment S4): a success phrase
-# clears only the failure keywords that share its clause (line, sentence,
-# or semicolon-separated segment) — "no errors" on a different line than
-# "deploy failed: connection refused" is a different clause's truth and
-# must not erase the failure.
-_CLAUSE_SPLIT_PATTERN = re.compile(r"[;\n；]|(?<=[.!?。！？])\s+")
+# Success-phrase scoping (roadmap U51, assessments S4 + N3): a success
+# phrase clears only the failure keywords that share its clause (line,
+# sentence, or semicolon-separated segment) — "no errors" on a different
+# line than "deploy failed: connection refused" is a different clause's
+# truth and must not erase the failure. Sentence ends split even when the
+# join is unspaced (pass-7 N3b: "deploy failed.no errors later" is two
+# clauses, not one) — models emit concatenated output without the space.
+# EXCEPT when a digit immediately follows the period: "10.000 failed"
+# dot-groups its magnitude (L15 separator set is `,` `.` space `_`), so a
+# period between digits is a grouping separator, not a sentence end
+# (independent-review finding 1). Commas are deliberately NOT clause
+# separators: they group digits ("1,000 failed") and carry list items
+# ("error, line 3, not found"), so comma-joined mixed claims are
+# resolved by the zero-count strip in _text_bears_failure, not by splitting.
+_CLAUSE_SPLIT_PATTERN = re.compile(
+    r"[;\n；]|(?<=[!?。！？])\s*|(?<=\.)(?!\d)\s*"
+)
 
 # Success-bearing count phrases that must clear a keyword hit: a report
 # saying zero things failed is a success report even though it contains the
@@ -128,11 +152,18 @@ _SUCCESS_COUNT_PATTERN = re.compile(
 # Structured failure/success vocabulary (assessment Q1 truth table).
 _EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
 # In-band success statuses for the ambiguous generic ``code`` key
-# (roadmap U51, assessment S2): tool wrappers store HTTP statuses in
-# ``code`` verbatim, so these nonzero values are NOT process failures.
-# ``exit_code``/``returncode`` are unambiguous exit keys and keep strict
-# nonzero-is-failure semantics.
-_HTTP_SUCCESS_CODES = frozenset({200, 201, 202, 204})
+# (roadmap U51/U67, assessments S2 + N4): tool wrappers store HTTP
+# statuses in ``code`` verbatim, so these nonzero values are NOT process
+# failures. The set is the complete success-shaped response family: every
+# 2xx the CLI tools actually emit (203/206 were missing in cycle 6 — both
+# are successes) plus the 3xx redirect/cache family, because these plugins
+# run redirect-following clients (curl -L / requests defaults): 301/302/
+# 303/307/308 are followed transparently and land on a final status, and
+# 304 is a conditional-cache success. ``exit_code``/``returncode`` keep
+# strict nonzero-is-failure semantics.
+_HTTP_SUCCESS_CODES = frozenset(
+    {200, 201, 202, 203, 204, 206, 301, 302, 303, 304, 307, 308}
+)
 _STATUS_FAILURE_WORDS = frozenset(
     {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
 )
@@ -323,26 +354,51 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
 
 
 def _text_bears_failure(text: str) -> bool:
-    """Clause-scoped keyword scan of a free-text payload (roadmap U51).
+    """Clause-scoped keyword scan of a free-text payload (roadmap U51/U67).
 
-    The payload is split into clauses (lines, sentences, semicolon
-    segments); a clause is failure-bearing when it carries a failure
-    keyword and no same-clause success phrase. A clause with explicit
-    ``N failed`` counts is a failure exactly when any N > 0 — every digit
-    width, with or without a paired passing count (assessment S1) — and
-    ``"0 failed"`` clauses are success reports. A success phrase in a
-    DIFFERENT clause never clears a failing clause (assessment S4:
-    "no errors" on another line must not erase "deploy failed").
+    The payload is split into clauses (lines, sentences — spaced or
+    unspaced joins — and semicolon segments); a clause is failure-bearing
+    when it carries a failure keyword and no same-clause success phrase.
+    A clause with explicit ``N failed`` counts is a failure exactly when
+    any N > 0 — every digit width and grouping (`,` `.` space `_`), with
+    or without a paired
+    passing count (assessments S1 + N1) — and ``"0 failed"`` claims are
+    success phrases. A zero-count claim clears the clause only when it is
+    the clause's SOLE failure evidence (pass-7 N3): ``"0 failed, deploy
+    failed: connection refused"`` fails because a further failure claim
+    stands in the same clause, while ``"0 failed, 12 passed"`` stays a
+    success report — and the zero-count rescan applies the SAME
+    same-clause success-phrase clearing as the keyword branch
+    (independent-review finding 2): ``"0 failed, exit code 1, no
+    errors"`` stays a success report exactly like ``"exit code 1, no
+    errors"``. A success phrase in a DIFFERENT clause never clears a
+    failing clause (assessment S4: "no errors" on another line must not
+    erase "deploy failed").
     """
 
     for clause in _CLAUSE_SPLIT_PATTERN.split(text):
         if not _FAILURE_KEYWORD_PATTERN.search(clause):
             continue
-        counts = [int(count) for count in _FAILURE_COUNT_PATTERN.findall(clause)]
+        counts = [
+            int(re.sub(r"[,. _]", "", count))
+            for count in _FAILURE_COUNT_PATTERN.findall(clause)
+        ]
+        if any(count > 0 for count in counts):
+            return True
         if counts:
-            if any(count > 0 for count in counts):
+            # Every explicit count is zero: strip the zero-count claims
+            # themselves and rescan — a further failure claim in the same
+            # clause still stands (pass-7 N3: "0 failed, deploy failed:
+            # connection refused" is a failure, "0 failed, 12 passed" is
+            # not). The rescan honors the SAME same-clause success-phrase
+            # clearing as the sibling branch (independent-review finding
+            # 2): "0 failed, exit code 1, no errors" stays a success
+            # report exactly like "exit code 1, no errors" — the leading
+            # zero-count must not flip the verdict.
+            remainder = _FAILURE_COUNT_PATTERN.sub(" ", clause)
+            if _FAILURE_KEYWORD_PATTERN.search(remainder) and not _SUCCESS_COUNT_PATTERN.search(remainder):
                 return True
-            continue  # every explicit count is zero: a success report
+            continue  # the zero-count claim was the only failure evidence
         if not _SUCCESS_COUNT_PATTERN.search(clause):
             return True
     return False
@@ -360,11 +416,14 @@ def looks_like_error(result: Any) -> bool:
     code checks them before the zero-exit return and tests pin that order;
     the old docstring claimed "zero → success" and was the defect); a
     nonzero ``code`` value that is a recognized in-band HTTP success status
-    (200/201/202/204) with no failure field is not an error (assessment S2:
-    the generic ``code`` key is ambiguous, unlike ``exit_code``/
-    ``returncode``); the keyword scan runs only when no structured verdict
-    exists, is scoped per clause, and binds ``N failed`` counts at every
-    digit width — so ``"0 failed, 12 passed"``, ``"success: no tests
+    (the full 2xx set plus the redirect-following 3xx family: 200/201/202/
+    203/204/206 and 301/302/303/304/307/308) with no failure field is not
+    an error (assessment S2 + pass-7 N4); the keyword scan runs only when
+    no structured verdict exists, is scoped per clause, and binds
+    ``N failed`` counts at every digit width and grouping (`,` `.` space
+    `_`: ``"1,000"``, ``"10.000"``, ``"10 000"``, ``"10_000"``, malformed
+    groups) — so
+    ``"0 failed, 12 passed"``, ``"success: no tests
     failed"``, ``{"stdout": "ok", "stderr": ""}``, ``"exit code 0"``, and
     ``{"code": 200}`` classify as success while ``"10 failed, 2 passed"``,
     ``{"returncode": 1}``, ``{"code": 1}``, and ``{"ok": false}`` classify

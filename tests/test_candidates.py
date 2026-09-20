@@ -601,3 +601,112 @@ def test_u51_zero_exit_truth_matches_the_pinned_code_order():
     assert looks_like_error({"exit_code": 0, "status": "error", "output": "ok"}) is True
     assert looks_like_error({"returncode": 0, "exception": "handled by caller"}) is True
     assert looks_like_error({"exit_code": 0, "stderr": "warnings printed, nothing failed"}) is False
+
+
+# ---------------------------------------------------------------------------
+# U67 — classifier format-matrix truth (pass-7 N1/N3/N4). The cycle-6 corpus
+# pinned digit WIDTHS; it never covered grouping separators ("1,000 failed"
+# parsed as 000 → success), unspaced clause joins, or the complete in-band
+# HTTP success family. The matrix below crosses widths × separators (`,` `.`
+# space `_` — the full L15/KTD31 set, widened by the independent review's
+# finding 1) × clause joins, and pins every HTTP code the wrappers emit.
+# ---------------------------------------------------------------------------
+
+_U67_WIDTH_SEPARATOR_CASES = [
+    # N1: comma-grouped failure counts classify as failure at every
+    # magnitude (cycle-6 read "1,000" as 000 → success).
+    ("1,000 failed", True),
+    ("10,000 failed", True),
+    ("1,000,000 failed", True),
+    ("2,048 failed", True),  # stay-green control from the batch contract
+    ("1,234 failed, 5 passed", True),
+    ("Tests: 2,048 failed, 12,030 passed", True),
+    # Independent-review finding 1 (L15 separator set): every OTHER
+    # grouping separator — not just comma — binds the count at true
+    # magnitude. The dot cases also prove the clause splitter no longer
+    # breaks "10.000 failed" into "10." + "000 failed" → success.
+    ("10.000 failed", True),
+    ("1.000.000 failed", True),
+    ("10 000 failed", True),
+    ("1 234 567 failed", True),
+    ("10_000 failed", True),
+    ("10,00 failed", True),  # malformed group: failure-shaped text errs loud
+    ("12.345 failed, 678 passed", True),
+    # Plain widths stay failure (cycle-6 pinned these; matrix re-pins).
+    ("1 failed", True),
+    ("10 failed", True),
+    ("100 failed", True),
+    ("10 failed, 2 passed", True),  # stay-green control (assessment S1)
+    ("1000000 failed", True),
+    # Zero-count claims stay success — and clear the clause only when they
+    # are its sole failure evidence (N3).
+    ("0 failed, 12 passed", False),  # stay-green control (assessment Q1)
+    ("grep: 0 failed", False),
+    ("0 failed", False),
+    ("0,000 failed, 300 passed", False),
+    ("0 failed, deploy failed: connection refused", True),  # N3: claim + failure
+    ("0 failed, exit code 1, no errors", False),  # review finding 2: rescan
+    ("exit code 1, no errors", False),  # honors the same success-phrase clearing
+    ("12 passed, 0 failed", False),
+]
+
+_U67_CLAUSE_JOIN_CASES = [
+    # N3: the join between a failure and a success phrase must not matter —
+    # semicolon, newline, spaced period, and UNSPACED period (models emit
+    # concatenated output) all split into separate clauses.
+    ("deploy failed; no errors later", True),
+    ("deploy failed\nno errors later", True),
+    ("deploy failed. no errors later", True),
+    ("deploy failed.no errors later", True),  # N3b: unspaced sentence join
+    ("deploy failed! no errors later", True),
+    ("deploy failed? no errors later", True),
+    ("no errors; nothing to report", False),
+    ("0 failed.deploy failed: connection refused", True),
+    ("10.000 failed.no errors later", True),  # grouping dot ≠ sentence dot
+]
+
+_U67_HTTP_CODE_CASES = [
+    # N4: the full in-band success family for the generic ``code`` key.
+    ({"code": 200}, False),
+    ({"code": 201}, False),
+    ({"code": 202}, False),
+    ({"code": 203}, False),  # cycle-6 miss: 203 is a success
+    ({"code": 204}, False),
+    ({"code": 206}, False),  # cycle-6 miss: 206 is a success
+    ({"code": 301}, False),  # cycle-6 miss: redirects are followed by clients
+    ({"code": 302}, False),
+    ({"code": 303}, False),
+    ({"code": 304}, False),  # conditional-cache success
+    ({"code": 307}, False),
+    ({"code": 308}, False),
+    ({"code": 400}, True),
+    ({"code": 401}, True),
+    ({"code": 404}, True),
+    ({"code": 500}, True),
+    ({"code": 502}, True),
+    ({"code": 1}, True),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U67_WIDTH_SEPARATOR_CASES)
+def test_u67_grouped_and_plain_failure_counts(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+@pytest.mark.parametrize("payload,expected", _U67_CLAUSE_JOIN_CASES)
+def test_u67_clause_joins_spaced_and_unspaced(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+@pytest.mark.parametrize("payload,expected", _U67_HTTP_CODE_CASES)
+def test_u67_http_success_family_for_generic_code(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+def test_u67_exit_keys_keep_strict_nonzero_semantics():
+    # The widened HTTP family applies ONLY to the ambiguous generic ``code``
+    # key; ``exit_code``/``returncode`` stay nonzero-is-failure even at
+    # HTTP-looking values (roadmap U51 boundary, re-pinned under U67).
+    assert looks_like_error({"exit_code": 301}) is True
+    assert looks_like_error({"returncode": 204}) is True
+    assert looks_like_error({"exit_code": 0}) is False

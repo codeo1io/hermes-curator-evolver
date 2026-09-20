@@ -656,12 +656,25 @@ class EvidenceStore:
         ).fetchone()["count"]
         skills = conn.execute(
             f"""
+            -- Pass-7 N2 (roadmap U68): every ingested row is a distinct
+            -- attributed action. The cycle-6 DISTINCT tuple collapsed
+            -- same-second hook bursts to one action, starving min_evidence
+            -- for exactly the parallel-tool-call shape; re-import dupes
+            -- are already guarded at ingest on the BACKFILL path
+            -- (backfill._tool_event_exists) — the LIVE hook path
+            -- (hooks.py) inserts unconditionally with no idempotency
+            -- key, so an identical re-delivered hook event would count
+            -- twice here where the old DISTINCT collapsed it. That
+            -- exposure is accepted for this batch (design recorded in
+            -- the roadmap execution outcome; identical-event redelivery
+            -- unevidenced; U69's on_skill_lifecycle ingestion is the
+            -- structural fix) and the tools table counts raw rows the
+            -- same way. Both columns stay disclosed: event_count is the
+            -- stable API name, event_rows discloses the raw count
+            -- (equal by construction).
             SELECT skill_name,
                    COUNT(*) AS event_rows,
-                   COUNT(DISTINCT
-                       COALESCE(session_id, '') || ':' || COALESCE(task_id, '') || ':'
-                       || COALESCE(skill_name, '') || ':' || COALESCE(created_at, '')
-                   ) AS event_count,
+                   COUNT(*) AS event_count,
                    COALESCE(SUM(is_error), 0) AS errors
             FROM tool_events
             WHERE {where} AND skill_name IS NOT NULL
