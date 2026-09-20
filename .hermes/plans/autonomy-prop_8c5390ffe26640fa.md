@@ -13,14 +13,23 @@ Observed 1 error-related event(s) requiring investigation. Recommended approach:
 - Submit for independent review and only then request approval for consequential promotion.
 - After approval, route implementation through Conductor and measure the real outcome.
 
-## Repository remote
-Push feature branches to the git remote named `fork` (codeo1io fork), never to `origin` and never to upstream.
+## Repository stewardship
+All changes are applied in the local fork (git remote `fork`, codeo1io) and pushed to branches on the fork.
+NEVER open pull requests against upstream repositories, and never retarget a fork branch to upstream.
+A PR may only be opened on the fork repo itself (fork base). Any PR intended for upstream must be proposed to the
+operator first with a diff review confirming it carries NO local-environment or infrastructure config
+(self-hosted runners / runner labels, LAN or Tailscale hosts, local paths like /home/agent or /work/projects,
+fork-specific remotes, or tooling present only on this host) — the operator opens or approves it.
+The operator's diff review must confirm every CI/workflow change is upstream-portable
+(e.g. keep `runs-on: ubuntu-latest` or the repo's existing runner config; our self-hosted runner
+policy applies to our own repos only).
 
 ## Acceptance
 - The failing behavior described above is reproduced and understood.
 - The change lands on a feature branch off the current default branch.
 - Targeted tests for changed surfaces pass (never the full suite).
 - The branch is pushed to the repository fork/remote; do not merge to upstream.
+- No PR against any upstream repository was opened during this campaign; any upstream-bound PR was proposed to the operator with a local-env/infra diff review instead.
 
 ---
 
@@ -621,3 +630,39 @@ KTD30. Remote policy unchanged (KTD2); this cycle-6 extension is roadmap-only an
 ### Sequencing
 
 U51 first - it is the third consecutive cycle a classifier defect tops the board, the reopened truth table poisons every downstream consumer (U24/U60 cohorts, U47's correlation, auto-evolve thresholds), and its corpus is already written in `repro-pass6.py`. Then U52 (same ingest pipeline, disjoint file) -> U53+U54 (both in `storage.py`, land together) -> U55 (opens U59's vocabulary) -> U56 (hygiene, ratchets CI). Extensions follow in research rank order: U57 -> U58 -> U59 -> U60 (needs U51) -> U61 -> U62 (gated, KTD28). Standing order otherwise unchanged: U5/U6/U18-U20/U25-U26/U29-U34/U38-U42/U47-U50 ride the cycles-2..5 batches as sequenced there; the next implement batch should take U51+U52+U53(+U54) as its core - all three are reproduced P2/P3 findings with lift-ready tests.
+
+## Execution outcome 2026-09-02 - maintenance cycle 6 (compounding)
+
+Provenance: cycle-6 batch shipped end-to-end (run `6f5d76c84f52491ba25460c4a6e1a454`; implement `c2f3f08acfd3485fb815e0588848d68a`, commit `9afb69b76efb440ab213f7bd65c4576d`, push, pr, ci, reconcile phases after it). Roadmap discipline unchanged: pure append, all prior sections byte-identical (pre-image sha256 `9d78771ef96641f03e49fb654160694c5da2063f8ae8a5fb90c9a64c06975fb4`).
+
+### Shipped state
+
+- Commits: `ab54279` "fix: make error classification, backfill selection, and storage reads truthful" (6 files, +726/-143) + `1622c89` "docs: record the cycle-6 assessment, research, and ingest-truth batch" (7 files, +1003) on `fix/maintenance-cycles-1-5`, parent `4350ee2` - the repo's own cycles-1-5 topology (29d7ded fix + ac9c0ee docs), per-CU reviewability carried by `docs/implementation/2026-09-02-cycle-6-batch-implementation.md`.
+- Pushed: fork `codeo1io/hermes-curator-evolver` `refs/heads/fix/maintenance-cycles-1-5` @ `1622c89` (fast-forward, no force); fork `main` unchanged at `cfc425b`; origin (pingchesu, never-push) unchanged at `45328db`, zero CI runs for the sha.
+- PR: https://github.com/codeo1io/hermes-curator-evolver/pull/1 (fork-internal, head `fix/maintenance-cycles-1-5` -> base `main`) - the campaign's first PR; prior cycles pushed fork main directly and upstream PR #26 was closed 2026-09-02 in favor of fork shipping. CI run 33653327190: both matrix legs (`Python tests (3.11)`/`(3.12)`) SUCCESS, 286 passed each (dot-decoded). Merge intentionally left to the operator/conductor gate.
+- Test baseline: 249 -> 286 (+37 permanent adversarial regressions: candidates +30, storage +5, backfill +2; none deleted); green on Python 3.11.15 (CI leg 3.11.16 on Actions) and 3.12.14 (repo .venv); ruff flat at 63 errors / 48 fixable.
+
+### Packet status after cycle 6
+
+- **CLOSED (verified fixed; review PASS + CI 286/286)**: U51 (B23/S1+S2+S4+S7 - paired-count truth at every digit width incl. comma forms, clause-scoped success phrases, HTTP-shaped `code` carve-out for generic keys only, docstring/test reconciled to one truth; 30 new tests), U52 (B24/S3 - cap-the-RESULT after trusted-order paging: 10,040-session fixture with limit 2 yields the two NEWEST, 51 bounded pages, `metadata_scan_truncated` disclosure, truthful counters; 2 new tests), U53+U54 (B25/B26 - read-only reader connections `mode=ro`+`query_only`, single-flight cache, PRAGMAs off the global lock, `connect()` docstring = warm writer; unified `_extract_skill_name` for ALL tools, `event_count` counts attributed actions with `event_rows` disclosed alongside; 5 new tests).
+- **U43/U36 stay closed at their reopened edges too**: B23's reopen is discharged by U51; B24's by U52. The third-consecutive-cycles classifier streak is broken by grammar (numeric capture + `N>0`), not another regex patch - see the prevention rules.
+- **U24** (per KTD29): measurement intent absorbed by U60; U24's remaining dependency (U51) is now satisfied - U24 closes when U60 lands.
+- **Next batch core: U55 + U56** (collision reporting opens U59's vocabulary; hygiene ratchets CI incl. the ruff gate at the 63-error baseline - CI is currently pytest-only, proven again this cycle). Then U18+U19. Extensions U57-U61 unblocked in research rank order (U60's U51-dependency satisfied); U62 stays double-gated (KTD28 - re-verify index liveness + PR #101237 at next research pass).
+- Carried defects unchanged with fresh cites from pass 6: P5/P6, P8, P9, N6, C1, C3, P12, P15; unstarted packets unchanged: U5, U6, U18-U20, U25-U26, U29-U34, U38-U42, U47-U50.
+
+### Durable lessons (compounded)
+
+Full set in `docs/learnings/2026-09-02-cycle-6-compounding.md` (rules L1-L14 with prevention hooks). Highest-value three:
+
+1. **Numeric semantics belong to code, not regex lookarounds** - `(?<!0\s)failed` cleared `10/100/110 failed`; `(\d+)\s+failed` + `N>0` ends the defect class. Every future text-classification change ships a digit-width sweep test (comma forms included).
+2. **Cap the RESULT, never the SCAN** - ordering must precede limits (cap-the-scan starves recency); hostile pagination terminates with disclosed truncation and counters that name what they count.
+3. **Readers get read-only connections** - a reader's `with conn:` can commit/rollback another thread's transaction; `mode=ro` + `query_only=1` readers, PRAGMAs off the lock, docstring states the delivered guarantee.
+
+Craft rules for the next implement batch: adversarial probes lift into permanent regressions in the same change unit; epoch-second fixtures keep ruff flat (UP017/DTZ001 traps); pin findings only after reproducing on the pre-change tree (`git archive HEAD` extraction) when the probe itself is new; load flakes get widened-but-meaningful timeouts + a green streak + disclosure, and the external-lock wall-clock -> window-count conversion is queued as a cycle-7 slice alongside U56.
+
+### Small notes for cycle 7
+
+- `SKILL_TOOL_NAMES` is now a documented vocabulary constant (extraction no longer consults it) - retire or re-purpose inside U55/U56 rather than leaving it half-alive.
+- Pre-fix `error_events` rows stay poisoned by design (append-only history); U58's reconciliation must read around them.
+- CI has no ruff job (P14's standing evidence: drift 65->63->64->63, ungated) - U56 adds the gate at 63, never rises, ratchets down.
+- Fork-internal PR is the campaign's ship shape going forward (branch push -> PR -> CI by head sha -> reconcile); upstream PR #26 remains closed, fork `main` merges only at the operator gate.
