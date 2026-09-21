@@ -67,8 +67,23 @@ def _content_text(value: Any) -> str:
         return repr(value)
 
 
-def _tool_call_id(call: dict[str, Any], index: int) -> str:
-    return str(call.get("id") or call.get("call_id") or call.get("tool_call_id") or f"tool-{index}")
+def _tool_call_id(call: dict[str, Any], index: int, message_index: int = 0) -> str:
+    # Session-unique fallback (roadmap U74, pass-8 F2): the old
+    # ``tool-{index}`` placeholder was unique only within ONE message, so
+    # two id-less calls to the same tool in different messages of one
+    # session collided on the (session, task_id, tool_name) dedupe key
+    # and silently imported as a single event. ``tool-{message_index}-{
+    # index}`` is unique across the whole session. Real ids are unchanged;
+    # a session first imported under the old fallback may re-import its
+    # previously collapsed calls once, while keyed re-imports stay
+    # idempotent — every skip is disclosed via
+    # ``tool_events_skipped_duplicate``.
+    return str(
+        call.get("id")
+        or call.get("call_id")
+        or call.get("tool_call_id")
+        or f"tool-{message_index}-{index}"
+    )
 
 
 def _tool_call_name_and_args(call: dict[str, Any]) -> tuple[str, Any]:
@@ -343,7 +358,7 @@ def _import_session_data(
     )
 
     tool_results = _tool_results_by_call_id(messages)
-    for message in messages:
+    for message_index, message in enumerate(messages):
         raw_calls = message.get("tool_calls")
         calls = raw_calls if isinstance(raw_calls, list) else []
         for call_index, call in enumerate(calls):
@@ -352,9 +367,13 @@ def _import_session_data(
             tool_name, args = _tool_call_name_and_args(call)
             if not tool_name:
                 continue
-            call_id = _tool_call_id(call, call_index)
+            call_id = _tool_call_id(call, call_index, message_index)
             task_id = f"backfill:{session_id}:{call_id}"
             if _tool_event_exists(evidence, session_id=session_id, task_id=task_id, tool_name=tool_name):
+                # Disclosed dedupe skip (roadmap U74, pass-8 F2): the row
+                # already exists (normal on re-import); it is counted so a
+                # lossy ingest stays visible instead of silent.
+                result["tool_events_skipped_duplicate"] += 1
                 continue
             evidence.record_tool_call(
                 tool_name=tool_name,
@@ -468,7 +487,9 @@ def backfill_sessions(
         "sessions_skipped_old": 0,
         "sessions_failed": 0,
         "files_failed": 0,
+        "legacy_skipped_undecodable": 0,
         "tool_events_imported": 0,
+        "tool_events_skipped_duplicate": 0,
         "turn_events_imported": 0,
         "session_events_imported": 0,
     }
@@ -522,6 +543,12 @@ def backfill_sessions(
         result["sessions_seen"] += 1
         try:
             data = _load_json(path)
+        except UnicodeDecodeError:
+            # Legacy transcripts with undecodable bytes must not abort the
+            # whole import (roadmap U76, carried P8): the file is counted
+            # and skipped with its own disclosure counter.
+            result["legacy_skipped_undecodable"] += 1
+            continue
         except (OSError, json.JSONDecodeError):
             result["files_failed"] += 1
             continue

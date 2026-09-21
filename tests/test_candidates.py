@@ -710,3 +710,70 @@ def test_u67_exit_keys_keep_strict_nonzero_semantics():
     assert looks_like_error({"exit_code": 301}) is True
     assert looks_like_error({"returncode": 204}) is True
     assert looks_like_error({"exit_code": 0}) is False
+
+
+_U73_SUCCESS_PHRASE_POSITION_CASES = [
+    # F1 (pass-8): a comma-joined success phrase used to clear a LATER
+    # genuine failure claim in the same clause. Positional truth (KTD35):
+    # the clause's last success phrase answers the evidence that PRECEDES
+    # it; a failure keyword after it is a new claim that stands.
+    ("no tests failed, deploy failed: connection refused", True),
+    ("all tests passed cleanly, but the build failed with exit code 1", True),
+    ("no errors, exit code 1", True),  # failure claim AFTER the success phrase
+    ("exit code 1, no errors", False),  # review finding 2 stays pinned
+    ("0 failed, exit code 1, no errors", False),  # zero count + answered evidence
+    ("0 failed, deploy failed: connection refused", True),  # N3 stays pinned
+    ("no tests failed", False),
+    ("success: no tests failed", False),
+    ("grep: 0 failed, 12 passed", False),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U73_SUCCESS_PHRASE_POSITION_CASES)
+def test_u73_success_phrases_answer_only_preceding_evidence(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+_U73_IN_BAND_RANGE_CASES = [
+    # F3 (pass-8): the enumerated in-band set missed legal codes (226 IM
+    # Used was the third miss after 203/206); the test is the RANGE.
+    ({"code": 226}, False),
+    ({"code": 218}, False),  # any 2xx is in-band by construction
+    ({"code": 310}, False),  # any 3xx is in-band by construction
+    ({"code": 399}, False),
+    ({"code": 400}, True),
+    ({"code": 418}, True),
+    ({"code": 599}, True),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U73_IN_BAND_RANGE_CASES)
+def test_u73_in_band_success_is_a_range_not_a_list(payload, expected):
+    assert looks_like_error(payload) is expected
+
+
+_U73_STATUS_PAYLOAD_CASES = [
+    # F4 (pass-8): ``status`` arrives as a bare integer or a status line,
+    # not only a vocabulary word; the same 200-399 range governs.
+    ({"status": 500}, True),
+    ({"status": 504}, True),
+    ({"status": 404}, True),
+    ({"status": "500 Internal Server Error"}, True),
+    ({"status": "403 Forbidden"}, True),
+    ({"status": 204}, False),
+    ({"status": 302}, False),
+    ({"status": "204 No Content"}, False),
+    ({"status": "ok"}, False),
+    ({"status": "healthy"}, False),
+    ({"status": "error"}, True),
+    ({"status": "timeout"}, True),
+    # explicit failure status outranks a zero exit (U43 order, F4-extended)
+    ({"status": 500, "exit_code": 0}, True),
+    # in-band status with a plain failing exit stays a failure
+    ({"status": 200, "exit_code": 1}, True),
+]
+
+
+@pytest.mark.parametrize("payload,expected", _U73_STATUS_PAYLOAD_CASES)
+def test_u73_status_payloads_int_lines_and_words(payload, expected):
+    assert looks_like_error(payload) is expected

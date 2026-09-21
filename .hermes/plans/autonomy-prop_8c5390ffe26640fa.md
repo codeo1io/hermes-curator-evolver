@@ -1005,3 +1005,271 @@ full suite 344 passed (334 + 10), exit 0; ruff 63 errors (48 fixable), flat
 vs baseline (verified by a stash A/B with the PATH ruff 0.16.7 the baseline
 used); `scripts/repro-pass7.py` 35/35 sane; all 24 review probes +
 stay-green controls re-verified by hand.
+
+
+## Extension 2026-09-21 - maintenance cycle 8
+
+Provenance: conductor run `2fed6c7b93ea4a65a8b2fb94218cdb27`
+(repository-maintenance `3d537fab4caf49a8be980f3d2170ee37:cycle:2`; the campaign
+cycle counter restarted at 1 with this campaign — the roadmap's internal
+"maintenance cycle" sequence continues: this is cycle 8, pass 8 of the
+adversarial assessment series). Fresh adversarial assessment
+(`docs/assessment/2026-09-21-adversarial-repository-assessment-pass8.md`,
+tree at `main@d1a7f57`, 7 fresh findings F1-F7 all empirically reproduced,
+14 carried re-derived; pytest 344 passed, PATH ruff 0.16.7 at 63/48 flat,
+`scripts/repro-pass7.py` 35/35) plus cycle-2 research (KTD28 half-discharge,
+host-surface feasibility re-verification, competitor scan). Roadmap pre-image
+sha256 for this append:
+`12dc92d42c9b43d324816135b8eba31ef0c91cee6316789764148b0a14d489f4`.
+
+### Completed in cycle 8
+
+- 2026-09-21 `assess` (pass 8) - worktree fast-forwarded from stale `a76962c`
+  base to shipped `main@d1a7f57` (4 commits: cycle-7 ship `b1401a4` + review
+  fold + roadmap-md-cleanse merge). Every cycle-7 claim re-verified fresh
+  (N1 comma-grouped counts, N3 clause scoping, N4 widened HTTP set, N2
+  COUNT(*) burst counting, N5 human-format disclosure, P1 backreference fix;
+  corpus 35/35). Test reality: **344 passed** (campaign doc said 334 — 10
+  review-phase tests landed after the doc was written). Seven fresh findings
+  F1-F7 (2 P2, 3 P3, 2 P4), all reproduced with one-liner probes recorded in
+  the assessment appendix.
+- 2026-09-21 `research` - KTD28 obligation discharged (see evidence
+  corrections); U69/U70 host-surface feasibility re-verified on the installed
+  v0.21.3 host; competitor scan found two entrants needing triage (watch list
+  below).
+
+### Blocking issues discovered (cycle-8 assessment)
+
+F1 (P2). Success phrases clear a whole comma-joined clause — asymmetric with
+the cycle-7 N3 fix (`candidates.py:402`, pattern `:147`): the zero-count
+branch strips-and-rescans (`:395-404`) but `"no tests failed, deploy failed:
+connection refused"` and `"nothing failed, deploy failed: ..."` still return
+False while the semantically identical `"0 failed, deploy failed: ..."`
+returns True. Fourth consecutive pass with a fresh misclassification class
+in this function; feeds `is_error` -> `_eligible_skill_rows` -> auto-evolve.
+F2 (P2). `_tool_call_id` fallback `tool-{index}` is unique only within ONE
+message (`backfill.py:71`); the ingest dedupe key `(session, task_id=
+backfill:{sess}:{call_id}, tool_name)` (`:356-358`) therefore collides for
+id-less calls in different messages and the second DISTINCT event is
+silently skipped — reproduced: a 2-message/2-call id-less session imports 1
+event; no duplicate counter, no log. Violates U68's count-every-ingested-
+action goal; re-creates N2-style starvation at the ingest layer for
+id-less/legacy transcripts.
+F3 (P3). `_HTTP_SUCCESS_CODES` still an enumerated frozenset
+(`candidates.py:164-166`): `{"code": 226}` -> error. Class iteration
+S2 -> N4 -> F3; the range rule (200 <= code < 400) has now been recommended
+twice and not taken.
+F4 (P3). Numeric/HTTP-line `status` is a blind spot (`candidates.py:285-287`,
+`_STATUS_FAILURE_WORDS` `:167`): `{"status": 500}` and `{"status": "500
+Internal Server Error"}` -> success; failure signal silently lost.
+F5 (P3). No cross-process mutual exclusion anywhere in the package (grep
+flock|fcntl|filelock: zero matches): the hash gate
+(`guarded_apply.py:344-345`) then write (`:380`) is check-then-write. Two
+overlapping auto-evolve runs (installed user timer + manual CLI — both
+shipped) both pass the gate against the same original, both write, both
+record `applied` manifests: lost update with misleading provenance.
+F6 (P4). `tools.py:43` `int(payload.get("days") or 7)` raises ValueError/
+TypeError on non-numeric agent input — raw exception to the agent.
+F7 (P4). S10 class re-reproduced: raw tracebacks from `merge-check` /
+`verify` on missing paths; uncaught `json.loads` on a corrupt manifest in
+`rollback_guarded_patch` (`guarded_apply.py:607` area) — already inside
+B28/U56's AC surface, re-cited with the fresh line.
+
+### New work packets - cycle-8 remediation
+
+- **U73 - classifier truth-table completion (F1 + F3 + F4; the S1/S2/N1/N3/N4
+  class, fifth iteration).** Files: `candidates.py`. Route success phrases
+  through the same strip-and-rescan treatment zero-count claims got (split
+  clauses on commas before the keyword scan; a success phrase may only clear
+  the failure claim it answers); replace the enumerated `_HTTP_SUCCESS_CODES`
+  with `200 <= code < 400` (the no-failure-field precondition already guards
+  abuse); accept integer `status` under the same range rule and treat a
+  `status` string beginning with a 4xx/5xx number as failure.
+  AC: every probe in the pass-8 appendix returns the fixed verdict; the
+  FORMAT-MATRIX test (rule L15) grows two axes — success-phrase co-occurrence
+  shapes ("no tests failed, X failed", "nothing failed; X failed") and a
+  status-payload table (int 500, "500 Internal Server Error", int 226,
+  "226 IM Used"); N1/N3/N4 stay-set controls remain green; corpus
+  (`repro-pass7.py` or a new `scripts/repro-pass8.py`) covers all seven
+  pass-8 probes and runs 35+7 / 42 sane from any checkout.
+  E: `looks_like_error` probes flip; full suite green; corpus run in the
+  validation script with dot-count or no-`-q` invocation (the addopts `-q`
+  trap, rule #5349, still applies).
+- **U74 - ingest identity integrity (F2).** Files: `backfill.py`. Make the
+  id-less fallback session-unique (`tool-{message_index}-{index}` or a
+  per-import running counter) and add a disclosed dropped-duplicate counter
+  (e.g. `tool_events_skipped_duplicate`) so any residual dedupe is visible,
+  never silent.
+  AC: a 2-message/2-call id-less session imports 2 events (the pass-8 probe
+  lifts verbatim); the counter appears in `summary()` stats and the
+  human-format backfill output (N5 disclosure pattern); keyed imports of
+  id-carrying transcripts remain idempotent (re-run imports 0 new events);
+  `event_rows` disclosure retained (KTD32).
+  E: new ingest test + counter assertion; corpus extended with the id-less
+  two-message case.
+- **U75 - single-writer mutual exclusion (F5).** Files: `auto_evolve.py`
+  (run-level lockfile around `run_auto_evolve`; plugin-owned path under the
+  evidence root, never host state). AC: a second overlapping invocation
+  exits cleanly with an explicit "already-running" reason in its run JSON
+  and writes no skill content; no lost-update path remains (the loser never
+  passes the hash gate concurrently); timer + manual CLI overlap documented
+  in after-install.md. E: a test holding the lock asserts the second run's
+  refusal; grep confirms exactly one lock construct, acquire/release paired.
+- **U76 - crash containment for apply/import loops (carried P5 + P8, both
+  P2, now homed).** Files: `auto_evolve.py`, `backfill.py`. Per-candidate
+  try/except in the apply loop (one candidate's unexpected failure records a
+  per-candidate error row and continues; the run JSON always lands); the
+  legacy `session_*.json` import catches UnicodeDecodeError per file (skip +
+  count, never abort the whole import).
+  AC: a mid-loop injected exception still produces the run JSON with earlier
+  candidates' outcomes and a recorded failure for the poison candidate; a
+  `\xff` legacy file yields `legacy_skipped_undecodable >= 1` and the import
+  continues with remaining files.
+  E: two fault-injection tests; the pass-8 F-surface probes stay green.
+
+### New work packets - cycle-8 extensions (research survivors)
+
+- **No new extension packets.** The cycle-2 research pass produced evidence
+  corrections to standing packets (below) and two competitor watch items, not
+  new capability packets; the standing extension order (U69 -> U57 -> U58 ->
+  U59 -> U60 -> U61 -> U72 -> U62) is unchanged.
+
+### Evidence corrections to standing packets (from cycle-8 research)
+
+- **U62 (ecosystem duplicate check)** - KTD28 re-verified as promised:
+  `HERMES_INDEX_URL` (`https://hermes-agent.nousresearch.com/docs/api/
+  skills-index.json`, `tools/skills_hub_search.py:26` in the host) is LIVE:
+  HTTP 200, 39,542,577 bytes, `generated_at` 2026-09-20T07:47:22Z,
+  `skill_count` 98,326 (up from the ~50k ClawHub figure cited in cycle 7).
+  Upstream PR #101237 ("feat(skills): index linked community skill
+  repositories", NousResearch/hermes-agent) is still OPEN, unmerged, as of
+  2026-09-21. Technical gate remains half-met: U62 stays double-gated;
+  re-verify the PR again at the next research pass.
+- **U70 (backfill early termination on host MRU)** - feasibility CONFIRMED on
+  the installed host, no upstream wait needed: `SessionDB.search_sessions`
+  is SQL-side MRU-first ("ORDER BY last_active DESC, s.started_at DESC,
+  s.id DESC LIMIT ? OFFSET ?", `hermes_state_sessions.py:1365`/`:1384` in
+  the v0.21.3 host checkout), and the plugin already imports exactly
+  `hermes_state.SessionDB` (`backfill.py:481`). U70's probe-then-early-
+  terminate design can ship against v0.21.3 as-is.
+- **U69 (host attribution)** - both sources re-confirmed on v0.21.3:
+  `on_skill_lifecycle` is a registered plugin hook (`hermes_cli/plugins.py:129`)
+  and `tools/skill_usage.py` maintains the durable per-skill facts
+  (`use_count`/`view_count`/`patch_count`/`reused`, `.usage.json` sidecar;
+  lines 126/330/446/467-471). AC unchanged; the read-only boundary holds.
+- **U56 (hygiene batch)** - scope grows by F6: validated integer parsing for
+  agent tool payloads (`tools.py:43` `days`, and non-string `skill`),
+  rendered as structured error payloads. F7 is already inside B28's AC
+  surface (corrupt-manifest JSONDecodeError in propose/verify/rollback) —
+  re-cited at `guarded_apply.py:607`.
+- **Positioning/watch line** - competitor state 2026-09-21: EvoSkill
+  (sentient-agi, 1211 stars) quiescent since 2026-08-24 (its "evolution
+  without a benchmark"/"continuous evolution from regular usage" open
+  directions remain open); MUSE-Autoskill dormant (38 stars, 2026-06-13);
+  hermes-agent-self-evolution dormant (5383 stars, 2026-06-17). The
+  usage-evidence-driven niche remains unoccupied by the leaders, but TWO
+  UNTRIAGED ENTRANTS appeared: `EvoScientist/EvoSkills` (436 stars, pushed
+  2026-09-01) and `Yonkoo11/hermes-dojo` (174 stars, "Self-improvement
+  system for Hermes Agent. Monitors performance, finds weak skills, fixes
+  them with self-evolution, reports results") — hermes-dojo is the first
+  same-host direct-competitor description seen in any research pass. Both
+  need a capability deep-read (evidence source? gate? write path?) at the
+  next research pass BEFORE the next positioning claim in README/roadmap
+  docs. Aggregator demand keeps growing (skillhub-awesome-skills 74 stars,
+  updated daily 2026-09-20).
+
+### Rejected directions (research cycle 8)
+
+- None of the standing cycle-1..7 rejections are overturned by cycle-8
+  evidence; no new directions were proposed by this research pass beyond
+  corrections above. The U62 double-gate holds (PR #101237 unmerged).
+
+### Decisions
+
+KTD35. F1/F3/F4 ship as ONE classifier unit (U73) — the four-pass history of
+this class (S1/S2 -> N1/N3/N4 -> F1/F3/F4) shows piecemeal patches trade one
+misclassification shape for another; the unit ships clause-splitting, range
+codes, and status handling together with the L15 FORMAT-MATRIX axes extended
+(success-phrase co-occurrence, status payloads) so the next pass cannot
+narrow-test its way to green.
+KTD36. U74's dedupe fix must keep every drop VISIBLE: `event_rows` stays
+(KTD32) and the new duplicate-skip counter joins the N5 human-format
+disclosure set. A silent skip in this layer is how N2 and F2 both happened.
+KTD37. U75's lock is plugin-owned state under the evidence root only — the
+cycle-2 rejection boundary (never write host-owned state) extends to lock
+files: no locking via `~/.hermes` artifacts.
+KTD38. Numbering continuity recorded: conductor campaign cycle counters
+restart per campaign; the roadmap's "maintenance cycle N" sequence is the
+authoritative internal history (this append is cycle 8, assessment pass 8)
+and future extensions continue that sequence regardless of campaign ids.
+
+### Sequencing
+
+U73 + U74 first — both are reproduced P2s on the evidence pipeline with
+probes already written in the pass-8 assessment appendix (they displace any
+hygiene work by severity, exactly as U67/U68 did in cycle 7). U76 (P5/P8
+crash containment) rides the same batch — two fault-injection tests, no
+design risk. U75 lands with or immediately after that batch (lockfile is
+small but touches the apply path — ship it only with its refusal test).
+U56 hygiene follows (now carrying F6 + the re-cited F7 surface + N7 + ST-6.x
+leg + ruff bump). Extensions in unchanged order: U69 (feasibility
+re-confirmed this cycle; still the structural end of the attribution class)
+-> U57 -> U58 -> U59 -> U60 -> U61 -> U72 -> U62 (double-gated, next KTD28
+re-verify at the following research pass, plus the hermes-dojo/EvoSkills
+triage). Standing order otherwise unchanged: U5/U6/U18-U20/U25-U26/U30-U34/
+U38-U42/U47-U48/U50 ride the cycles-2..5 batches as sequenced there. P9,
+N6', C1, C3, P12, P14, S9, N6, N7, N8, caps, P6, S10 remain carried defects
+with homes where noted (S9/caps/P14/S10/F6/F7 -> U56; N8 -> U71).
+
+## Cycle 8 status 2026-09-21 (pre-review fold)
+
+Status of the cycle-8 extension above, folded from pre-review evidence only
+(assessment pass 8, research, roadmap, prioritization, stewardship,
+implementation, targeted/full test outcomes). Review and shipping outcomes are
+recorded by the NEXT cycle's assessment, not here.
+
+Implemented this cycle (pre-review; code in the stewardship worktree, uncommitted
+at fold time):
+
+- **U73 classifier truth-table (F1+F3+F4) — implemented.** In-band success is the
+  200-399 RANGE (`_IN_BAND_SUCCESS_MIN/MAX`), replacing the enumerated set (226
+  now in-band); `_status_signal()` classifies integer / `NNN ...` status-line /
+  word `status` payloads under the same range + vocabularies with explicit-failure
+  precedence; comma-joined mixed clauses resolve positionally (KTD35): the
+  clause's LAST success claim clears only the evidence PRECEDING it. The
+  cycle-7 comma-splitting rejection block at candidates.py:115-137 was rewritten
+  to the new rationale. Pinned: ~30 new matrix cases (mirror pairs included) +
+  corpus records f1a/f1b/f3/f4a/f4b.
+- **U74 ingest identity (F2) — implemented.** `_tool_call_id`'s id-less fallback
+  is session-unique (`tool-{message_index}-{index}`); dedupe skips are disclosed
+  via `tool_events_skipped_duplicate` (backfill stats + cli human output,
+  N5 pattern). Pinned: import-2-events + idempotence tests + corpus records.
+- **U76 crash containment (carried P5+P8) — implemented.** The auto-evolve apply
+  loop wraps each candidate (raising apply -> `status="failed"` row + error
+  string; loop continues; run JSON always lands; summary `failed` count); the
+  legacy import gate catches `UnicodeDecodeError` with a disclosed
+  `legacy_skipped_undecodable` counter. Pinned by fault-injection tests
+  (poison-apply; undecodable-file).
+
+Not implemented, carried with intent:
+
+- **U75 single-writer lockfile** — first alternate; pull-in criteria recorded in
+  `docs/prioritization/2026-09-21-cycle-8-batch.md` (all green + matrix passing +
+  refusal test <60 lines). F5 (hash-gate-then-write TOCTOU) stands until then.
+- **U56 hardening batch** — grows by F6 (tools.py:43 `int(days)` raise); F7 stays
+  B28-covered; held a third cycle for ruff-churn overlap with U73/U74 files.
+- **U69** — dependency satisfied by U74 landing; needs KTD26 re-read of
+  U38/U47/U60 and must inherit the disclosed-counter pattern.
+
+Verification at fold time (worktree, uncommitted): pytest **377 passed**
+(344 baseline + 33 new), corpus `scripts/repro-pass7.py` **43/43 / 0 deviations**
+(35 pass-7 + 8 pass-8 records), ruff PATH 0.16.7 **63** errors on
+`hermes_curator_evolver tests` / **16** on `scripts/repro-pass7.py`, both flat
+(proven by per-file stash A/B; new code uses `datetime.UTC`).
+
+Durable lessons folded to `docs/learnings/2026-09-21-cycle-8-compounding.md`
+(L22-L28: range-not-enumeration, fallback-id uniqueness scope, mirror-shape
+fixtures, exception-hierarchy audit, injection-proven containment, zero-lint
+stash A/B, interruption-remainder recovery). Cycle-9 candidates are listed at
+the end of that document (U75, U56, U69+KTD26, positional-rule adversarial
+re-review, U62 re-verify, U70, hermes-dojo competitor watch).

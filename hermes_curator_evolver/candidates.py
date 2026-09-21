@@ -133,8 +133,12 @@ _FAILURE_COUNT_PATTERN = re.compile(
 # period between digits is a grouping separator, not a sentence end
 # (independent-review finding 1). Commas are deliberately NOT clause
 # separators: they group digits ("1,000 failed") and carry list items
-# ("error, line 3, not found"), so comma-joined mixed claims are
-# resolved by the zero-count strip in _text_bears_failure, not by splitting.
+# ("error, line 3, not found"). Comma-joined mixed claims are resolved
+# POSITIONALLY in _text_bears_failure (pass-8 F1 / KTD35): a success
+# phrase answers failure evidence that PRECEDES it in the clause, while
+# a failure keyword that follows the clause's last success phrase is a
+# new claim that stands — "no tests failed, deploy failed: connection
+# refused" fails, "exit code 1, no errors" stays a success report.
 _CLAUSE_SPLIT_PATTERN = re.compile(
     r"[;\n；]|(?<=[!?。！？])\s*|(?<=\.)(?!\d)\s*"
 )
@@ -152,24 +156,59 @@ _SUCCESS_COUNT_PATTERN = re.compile(
 # Structured failure/success vocabulary (assessment Q1 truth table).
 _EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
 # In-band success statuses for the ambiguous generic ``code`` key
-# (roadmap U51/U67, assessments S2 + N4): tool wrappers store HTTP
-# statuses in ``code`` verbatim, so these nonzero values are NOT process
-# failures. The set is the complete success-shaped response family: every
-# 2xx the CLI tools actually emit (203/206 were missing in cycle 6 — both
-# are successes) plus the 3xx redirect/cache family, because these plugins
-# run redirect-following clients (curl -L / requests defaults): 301/302/
-# 303/307/308 are followed transparently and land on a final status, and
-# 304 is a conditional-cache success. ``exit_code``/``returncode`` keep
-# strict nonzero-is-failure semantics.
-_HTTP_SUCCESS_CODES = frozenset(
-    {200, 201, 202, 203, 204, 206, 301, 302, 303, 304, 307, 308}
-)
+# (roadmap U51/U67/U73, assessments S2 + N4 + pass-8 F3): tool wrappers
+# store HTTP statuses in ``code`` verbatim, so these nonzero values are NOT
+# process failures. The rule is the full in-band RANGE, not an enumerated
+# set: every 2xx is success, and so is the whole 3xx family, because
+# these plugins run redirect-following clients (curl -L / requests
+# defaults): 301/302/303/307/308 are followed transparently and land on a
+# final status, and 304 is a conditional-cache success. Enumeration is
+# what missed 203/206 in cycle 6 and 226 in pass 8 (IM Used is a legal
+# in-band response), so the range is total by construction.
+# ``exit_code``/``returncode`` keep strict nonzero-is-failure semantics.
+_IN_BAND_SUCCESS_MIN = 200
+_IN_BAND_SUCCESS_MAX = 400
 _STATUS_FAILURE_WORDS = frozenset(
     {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
 )
 _STATUS_SUCCESS_WORDS = frozenset(
     {"ok", "success", "succeeded", "passed", "completed", "healthy"}
 )
+
+# Status-payload truth (roadmap U73, pass-8 F4): ``status`` arrives as a
+# bare integer ("status": 500) or a status LINE ("500 Internal Server
+# Error"), not only a vocabulary word. The same in-band range rule
+# governs both: 200-399 is an explicit success signal, any other number
+# is an explicit failure signal. Word statuses keep the vocabulary check.
+_STATUS_LINE_PATTERN = re.compile(r"^\s*(\d{3})\b")
+
+
+def _status_signal(value: Any) -> str | None:
+    """Classify a ``status`` payload as "failure", "success", or no signal."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        code = int(value)
+        return (
+            "success"
+            if _IN_BAND_SUCCESS_MIN <= code < _IN_BAND_SUCCESS_MAX
+            else "failure"
+        )
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _STATUS_FAILURE_WORDS:
+            return "failure"
+        if lowered in _STATUS_SUCCESS_WORDS:
+            return "success"
+        match = _STATUS_LINE_PATTERN.match(value)
+        if match:
+            code = int(match.group(1))
+            return (
+                "success"
+                if _IN_BAND_SUCCESS_MIN <= code < _IN_BAND_SUCCESS_MAX
+                else "failure"
+            )
+    return None
 
 _PR_REF_PATTERN = re.compile(r"\bPR\s*#?\d+\b|\bpull[-\s]request\s*#?\d+\b", re.IGNORECASE)
 _ISSUE_ONLY_PATTERN = re.compile(r"^#\d+$")
@@ -284,8 +323,8 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
     Structured payload fields are authoritative, in this order: an explicit
     ``is_error`` record flag; a nonzero numeric exit status under any of
     ``exit_code``/``returncode``/``code``; a truthy ``error``/``exception``;
-    ``ok``/``success`` ``False``; a ``status`` string from the failure
-    vocabulary. A zero exit status is an explicit success (it returns before
+    ``ok``/``success`` ``False``; a ``status`` failure signal (vocabulary
+    word, 4xx/5xx number, or "NNN …" status line). A zero exit status is an explicit success (it returns before
     the text scan), as are ``ok``/``success`` ``True`` and success-status
     strings when the exit status agrees. Only when no structured signal
     decides does the keyword scan run — and it never matches a success
@@ -312,7 +351,10 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
         # store HTTP statuses in it verbatim — so a nonzero value there is
         # NOT a process failure when it is a recognized in-band success
         # status and no explicit failure field exists (S2);
-        # ``exit_code``/``returncode`` keep strict exit semantics.
+        # ``exit_code``/``returncode`` keep strict exit semantics. The
+        # generic ``code`` in-band test is the RANGE 200-399 (pass-8 F3:
+        # the enumerated set missed 226), and ``status`` carries numeric
+        # and status-line signals under the same range (pass-8 F4).
         exit_code: int | None = None
         exit_code_key: str | None = None
         for key in _EXIT_CODE_KEYS:
@@ -321,19 +363,17 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
                 exit_code = int(value)
                 exit_code_key = key
                 break
+        status_signal = _status_signal(payload.get("status"))
         explicit_failure = bool(
             payload.get("error")
             or payload.get("exception")
             or payload.get("ok") is False
             or payload.get("success") is False
-            or (
-                isinstance(payload.get("status"), str)
-                and payload["status"].strip().lower() in _STATUS_FAILURE_WORDS
-            )
+            or status_signal == "failure"
         )
         if exit_code is not None and exit_code != 0 and not (
             exit_code_key == "code"
-            and exit_code in _HTTP_SUCCESS_CODES
+            and _IN_BAND_SUCCESS_MIN <= exit_code < _IN_BAND_SUCCESS_MAX
             and not explicit_failure
         ):
             return True
@@ -341,14 +381,13 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
             return True
         if payload.get("ok") is False or payload.get("success") is False:
             return True
-        status = payload.get("status")
-        if isinstance(status, str) and status.strip().lower() in _STATUS_FAILURE_WORDS:
+        if status_signal == "failure":
             return True
         if exit_code == 0:
             return False
         if payload.get("ok") is True or payload.get("success") is True:
             return False
-        if isinstance(status, str) and status.strip().lower() in _STATUS_SUCCESS_WORDS:
+        if status_signal == "success":
             return False
     return _text_bears_failure(text)
 
@@ -358,22 +397,22 @@ def _text_bears_failure(text: str) -> bool:
 
     The payload is split into clauses (lines, sentences — spaced or
     unspaced joins — and semicolon segments); a clause is failure-bearing
-    when it carries a failure keyword and no same-clause success phrase.
-    A clause with explicit ``N failed`` counts is a failure exactly when
-    any N > 0 — every digit width and grouping (`,` `.` space `_`), with
-    or without a paired
-    passing count (assessments S1 + N1) — and ``"0 failed"`` claims are
-    success phrases. A zero-count claim clears the clause only when it is
-    the clause's SOLE failure evidence (pass-7 N3): ``"0 failed, deploy
-    failed: connection refused"`` fails because a further failure claim
-    stands in the same clause, while ``"0 failed, 12 passed"`` stays a
-    success report — and the zero-count rescan applies the SAME
-    same-clause success-phrase clearing as the keyword branch
-    (independent-review finding 2): ``"0 failed, exit code 1, no
-    errors"`` stays a success report exactly like ``"exit code 1, no
-    errors"``. A success phrase in a DIFFERENT clause never clears a
-    failing clause (assessment S4: "no errors" on another line must not
-    erase "deploy failed").
+    when it carries a failure keyword that is not answered in clause
+    order. A clause with explicit ``N failed`` counts is a failure exactly
+    when any N > 0 — every digit width and grouping (`,` `.` space `_`),
+    with or without a paired
+    passing count (assessments S1 + N1). Positional success-phrase truth
+    (pass-8 F1 / KTD35): the clause's LAST success phrase (a zero-count
+    claim or a ``no-…-failed``/``no errors`` phrase) is its final answer —
+    it clears the failure evidence that PRECEDES it in the clause, while
+    a failure keyword AFTER it is a new claim that stands: ``"no tests
+    failed, deploy failed: connection refused"`` fails, and ``"0 failed,
+    deploy failed: connection refused"`` still fails (pass-7 N3), while
+    ``"0 failed, exit code 1, no errors"`` stays a success report
+    (independent-review finding 2) and ``"0 failed, 12 passed"`` stays a
+    success (pass-7 N1). A success phrase in a DIFFERENT clause never
+    clears a failing clause (assessment S4: "no errors" on another line
+    must not erase "deploy failed").
     """
 
     for clause in _CLAUSE_SPLIT_PATTERN.split(text):
@@ -385,22 +424,24 @@ def _text_bears_failure(text: str) -> bool:
         ]
         if any(count > 0 for count in counts):
             return True
-        if counts:
-            # Every explicit count is zero: strip the zero-count claims
-            # themselves and rescan — a further failure claim in the same
-            # clause still stands (pass-7 N3: "0 failed, deploy failed:
-            # connection refused" is a failure, "0 failed, 12 passed" is
-            # not). The rescan honors the SAME same-clause success-phrase
-            # clearing as the sibling branch (independent-review finding
-            # 2): "0 failed, exit code 1, no errors" stays a success
-            # report exactly like "exit code 1, no errors" — the leading
-            # zero-count must not flip the verdict.
-            remainder = _FAILURE_COUNT_PATTERN.sub(" ", clause)
-            if _FAILURE_KEYWORD_PATTERN.search(remainder) and not _SUCCESS_COUNT_PATTERN.search(remainder):
-                return True
-            continue  # the zero-count claim was the only failure evidence
-        if not _SUCCESS_COUNT_PATTERN.search(clause):
+        # Positional resolution (pass-8 F1 / KTD35): the clause's LAST
+        # success claim — a zero-count phrase (any digit grouping: "0
+        # failed", "0,000 failed" are matched by the count pattern, whose
+        # counts reaching here are all zero) or a ``no-…-failed``/``no
+        # errors`` phrase — is its final answer: it clears the failure
+        # evidence that PRECEDES it in the clause, while a failure keyword
+        # AFTER it is a new claim that stands. A keyword with neither a
+        # count nor a success claim is an unanswered failure.
+        last_success_end = 0
+        for match in _SUCCESS_COUNT_PATTERN.finditer(clause):
+            last_success_end = match.end()
+        for match in _FAILURE_COUNT_PATTERN.finditer(clause):
+            last_success_end = max(last_success_end, match.end())
+        if not last_success_end:
             return True
+        if _FAILURE_KEYWORD_PATTERN.search(clause[last_success_end:]):
+            return True
+        continue
     return False
 
 
@@ -412,13 +453,15 @@ def looks_like_error(result: Any) -> bool:
     call this one structured-first classifier. The U43/U51 truth table:
     ``exit_code``/``returncode``/``code`` nonzero → error, zero → success —
     but explicit failure fields (``error``, ``exception``, ``ok``/``success``
-    false, ``status`` failure word) outrank a zero exit (assessment S5: the
+    false, ``status`` failure signal) outrank a zero exit (assessment S5: the
     code checks them before the zero-exit return and tests pin that order;
     the old docstring claimed "zero → success" and was the defect); a
-    nonzero ``code`` value that is a recognized in-band HTTP success status
-    (the full 2xx set plus the redirect-following 3xx family: 200/201/202/
-    203/204/206 and 301/302/303/304/307/308) with no failure field is not
-    an error (assessment S2 + pass-7 N4); the keyword scan runs only when
+    nonzero ``code`` value that is an in-band HTTP success status
+    with no failure field is not
+    an error (assessment S2 + pass-7 N4 + pass-8 F3: the in-band test is
+    the full 200-399 RANGE — enumeration kept missing legal codes like
+    226); a numeric or status-line ``status`` carries the same range rule
+    and failure/success vocabulary (pass-8 F4); the keyword scan runs only when
     no structured verdict exists, is scoped per clause, and binds
     ``N failed`` counts at every digit width and grouping (`,` `.` space
     `_`: ``"1,000"``, ``"10.000"``, ``"10 000"``, ``"10_000"``, malformed

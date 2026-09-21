@@ -1007,180 +1007,189 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                 maximum=_MAX_SKILL_CONTENT_CHARS,
             ),
         }
-        if not skill_file:
-            candidate["status"] = "skipped"
-            candidate["reason"] = "skill-file-not-found"
-            candidates.append(candidate)
-            continue
-        original = skill_file.read_text(encoding="utf-8")
-        if _skill_is_pinned(original):
-            candidate["status"] = "skipped"
-            candidate["reason"] = "pinned-skill"
-            candidates.append(candidate)
-            continue
-        if cfg.apply_low_risk and cfg.approve_auto_apply:
-            if source_info and source_info.source != SOURCE_LOCAL_AGENT_CREATED:
+        try:
+            if not skill_file:
                 candidate["status"] = "skipped"
-                candidate["reason"] = "source-not-agent-created"
+                candidate["reason"] = "skill-file-not-found"
                 candidates.append(candidate)
                 continue
-            skip_reason = _auto_apply_skip_reason(
+            original = skill_file.read_text(encoding="utf-8")
+            if _skill_is_pinned(original):
+                candidate["status"] = "skipped"
+                candidate["reason"] = "pinned-skill"
+                candidates.append(candidate)
+                continue
+            if cfg.apply_low_risk and cfg.approve_auto_apply:
+                if source_info and source_info.source != SOURCE_LOCAL_AGENT_CREATED:
+                    candidate["status"] = "skipped"
+                    candidate["reason"] = "source-not-agent-created"
+                    candidates.append(candidate)
+                    continue
+                skip_reason = _auto_apply_skip_reason(
+                    skill_name=name,
+                    cfg=cfg,
+                    channel_bound_skills=channel_bound_skills,
+                )
+                if skip_reason:
+                    candidate["status"] = "skipped"
+                    candidate["reason"] = skip_reason
+                    candidates.append(candidate)
+                    continue
+                if candidate["channel_bound"] and len(original) > candidate["auto_loaded_skill_max_chars"]:
+                    candidate["status"] = "skipped"
+                    candidate["reason"] = "channel-bound-skill-over-size-budget"
+                    candidate["content_size"] = {
+                        "current_chars": len(original),
+                        "auto_loaded_skill_max_chars": candidate["auto_loaded_skill_max_chars"],
+                    }
+                    candidates.append(candidate)
+                    continue
+            skill_report = build_report(store, days=days, skill=name)
+            skill_summary = skill_report.get("summary") or {}
+            evidence_rows = skill_report.get("skill_evidence") or []
+            variants_requested = _bounded(cfg.variants or 1, minimum=1, maximum=len(_VARIANT_SPECS))
+            variant_results = generate_variants(
                 skill_name=name,
-                cfg=cfg,
-                channel_bound_skills=channel_bound_skills,
+                skill_text=original,
+                days=days,
+                summary=skill_summary,
+                evidence_rows=evidence_rows,
+                count=variants_requested,
             )
-            if skip_reason:
+            winning = select_winning_variant(variant_results)
+            prepared = winning["prepared"]
+            variants_summary = [
+                {
+                    "index": variant["index"],
+                    "name": variant["name"],
+                    "spec": variant["spec"],
+                    "size_strategy": variant["size_strategy"],
+                    "skipped_reason": variant["skipped_reason"],
+                    "content_chars": variant["content_chars"],
+                    "support_files": variant["support_files"],
+                    "score": variant["score"],
+                    "score_breakdown": variant["score_breakdown"],
+                    "selected": variant["index"] == winning["index"],
+                }
+                for variant in variant_results
+            ]
+            candidate["variants_requested"] = variants_requested
+            candidate["variants"] = variants_summary
+            candidate["selected_variant"] = {
+                "index": winning["index"],
+                "name": winning["name"],
+                "score": winning["score"],
+            }
+            if prepared.skipped_reason:
                 candidate["status"] = "skipped"
-                candidate["reason"] = skip_reason
+                candidate["reason"] = prepared.skipped_reason
+                candidate["size_strategy"] = prepared.size_strategy
                 candidates.append(candidate)
                 continue
-            if candidate["channel_bound"] and len(original) > candidate["auto_loaded_skill_max_chars"]:
+            updated = prepared.content
+            if (
+                cfg.apply_low_risk
+                and cfg.approve_auto_apply
+                and candidate["channel_bound"]
+                and len(updated) > candidate["auto_loaded_skill_max_chars"]
+            ):
                 candidate["status"] = "skipped"
                 candidate["reason"] = "channel-bound-skill-over-size-budget"
+                candidate["size_strategy"] = prepared.size_strategy
                 candidate["content_size"] = {
                     "current_chars": len(original),
+                    "updated_chars": len(updated),
                     "auto_loaded_skill_max_chars": candidate["auto_loaded_skill_max_chars"],
                 }
                 candidates.append(candidate)
                 continue
-        skill_report = build_report(store, days=days, skill=name)
-        skill_summary = skill_report.get("summary") or {}
-        evidence_rows = skill_report.get("skill_evidence") or []
-        variants_requested = _bounded(cfg.variants or 1, minimum=1, maximum=len(_VARIANT_SPECS))
-        variant_results = generate_variants(
-            skill_name=name,
-            skill_text=original,
-            days=days,
-            summary=skill_summary,
-            evidence_rows=evidence_rows,
-            count=variants_requested,
-        )
-        winning = select_winning_variant(variant_results)
-        prepared = winning["prepared"]
-        variants_summary = [
-            {
-                "index": variant["index"],
-                "name": variant["name"],
-                "spec": variant["spec"],
-                "size_strategy": variant["size_strategy"],
-                "skipped_reason": variant["skipped_reason"],
-                "content_chars": variant["content_chars"],
-                "support_files": variant["support_files"],
-                "score": variant["score"],
-                "score_breakdown": variant["score_breakdown"],
-                "selected": variant["index"] == winning["index"],
-            }
-            for variant in variant_results
-        ]
-        candidate["variants_requested"] = variants_requested
-        candidate["variants"] = variants_summary
-        candidate["selected_variant"] = {
-            "index": winning["index"],
-            "name": winning["name"],
-            "score": winning["score"],
-        }
-        if prepared.skipped_reason:
-            candidate["status"] = "skipped"
-            candidate["reason"] = prepared.skipped_reason
-            candidate["size_strategy"] = prepared.size_strategy
-            candidates.append(candidate)
-            continue
-        updated = prepared.content
-        if (
-            cfg.apply_low_risk
-            and cfg.approve_auto_apply
-            and candidate["channel_bound"]
-            and len(updated) > candidate["auto_loaded_skill_max_chars"]
-        ):
-            candidate["status"] = "skipped"
-            candidate["reason"] = "channel-bound-skill-over-size-budget"
-            candidate["size_strategy"] = prepared.size_strategy
-            candidate["content_size"] = {
-                "current_chars": len(original),
-                "updated_chars": len(updated),
-                "auto_loaded_skill_max_chars": candidate["auto_loaded_skill_max_chars"],
-            }
-            candidates.append(candidate)
-            continue
-        candidate.update(
-            {
-                "status": "planned",
-                "current_sha256": sha256_file(skill_file),
-                "new_content_changed": updated != original,
-                "size_strategy": prepared.size_strategy,
-                "support_files": sorted(prepared.support_files),
-                "content_size": {
-                    "current_chars": len(original),
-                    "updated_chars": len(updated),
-                    "soft_limit_chars": _SOFT_SKILL_CONTENT_CHARS,
-                    "hard_limit_chars": _MAX_SKILL_CONTENT_CHARS,
-                },
-                "evidence_summary": {
-                    "tool_events": int(skill_summary.get("tool_events") or 0),
-                    "skill_events": int(skill_summary.get("skill_events") or 0),
-                    "error_events": int(skill_summary.get("error_events") or 0),
-                },
-            }
-        )
-        if cfg.apply_low_risk:
-            if not cfg.approve_auto_apply:
-                candidate["apply_result"] = {
-                    "applied": False,
-                    "reason": "auto-approval-required",
+            candidate.update(
+                {
+                    "status": "planned",
+                    "current_sha256": sha256_file(skill_file),
+                    "new_content_changed": updated != original,
+                    "size_strategy": prepared.size_strategy,
+                    "support_files": sorted(prepared.support_files),
+                    "content_size": {
+                        "current_chars": len(original),
+                        "updated_chars": len(updated),
+                        "soft_limit_chars": _SOFT_SKILL_CONTENT_CHARS,
+                        "hard_limit_chars": _MAX_SKILL_CONTENT_CHARS,
+                    },
+                    "evidence_summary": {
+                        "tool_events": int(skill_summary.get("tool_events") or 0),
+                        "skill_events": int(skill_summary.get("skill_events") or 0),
+                        "error_events": int(skill_summary.get("error_events") or 0),
+                    },
                 }
-            elif block_mutations_for_drill:
-                candidate["status"] = "skipped"
-                candidate["reason"] = "restore-drill-required"
-                candidate["restore_drill_gate"] = drill_gate
-                candidates.append(candidate)
-                continue
-            else:
-                provenance_payload = {
-                    "skill_name": name,
-                    "source": source_info.source if source_info else "unknown",
-                    "writable": bool(source_info.writable) if source_info else False,
-                }
-                apply_result = apply_guarded_patch(
-                    target_path=skill_file,
-                    new_content=updated,
-                    expected_sha256=candidate["current_sha256"],
-                    approved=True,
-                    backup_root=backup_dir,
-                    verify_command=cfg.verify_command,
-                    verify_cwd=cfg.verify_cwd or skills_dir,
-                    pre_verify_command=cfg.pre_verify_command,
-                    staged_verify=bool(cfg.staged_verify or cfg.pre_verify_command),
-                    skill_name=name,
-                    provenance=provenance_payload,
-                    evidence_refs=evidence_refs,
-                    scheduler_refs=scheduler_refs,
-                )
-                candidate["apply_result"] = apply_result
-                if apply_result.get("applied"):
-                    for relative_path, content in prepared.support_files.items():
-                        support_path = skill_file.parent / relative_path
-                        support_path.parent.mkdir(parents=True, exist_ok=True)
-                        support_path.write_text(content, encoding="utf-8")
-                        register_support_file_in_manifest(
-                            apply_result["manifest_path"],
-                            source_path=support_path,
-                            relative_path=relative_path,
-                            kind="reference-spillover",
-                        )
-                    pruned_references = prune_auto_reference_files(
-                        skill_file.parent, name, max_reference_files
+            )
+            if cfg.apply_low_risk:
+                if not cfg.approve_auto_apply:
+                    candidate["apply_result"] = {
+                        "applied": False,
+                        "reason": "auto-approval-required",
+                    }
+                elif block_mutations_for_drill:
+                    candidate["status"] = "skipped"
+                    candidate["reason"] = "restore-drill-required"
+                    candidate["restore_drill_gate"] = drill_gate
+                    candidates.append(candidate)
+                    continue
+                else:
+                    provenance_payload = {
+                        "skill_name": name,
+                        "source": source_info.source if source_info else "unknown",
+                        "writable": bool(source_info.writable) if source_info else False,
+                    }
+                    apply_result = apply_guarded_patch(
+                        target_path=skill_file,
+                        new_content=updated,
+                        expected_sha256=candidate["current_sha256"],
+                        approved=True,
+                        backup_root=backup_dir,
+                        verify_command=cfg.verify_command,
+                        verify_cwd=cfg.verify_cwd or skills_dir,
+                        pre_verify_command=cfg.pre_verify_command,
+                        staged_verify=bool(cfg.staged_verify or cfg.pre_verify_command),
+                        skill_name=name,
+                        provenance=provenance_payload,
+                        evidence_refs=evidence_refs,
+                        scheduler_refs=scheduler_refs,
                     )
-                    if pruned_references:
-                        candidate["pruned_reference_files"] = pruned_references
-                    applied += 1
-                    candidate["status"] = "applied"
-                    if cfg.require_restore_drill:
-                        block_mutations_for_drill = True
-                        drill_gate = evaluate_restore_drill_gate(
-                            drill_state_path,
-                            require=True,
+                    candidate["apply_result"] = apply_result
+                    if apply_result.get("applied"):
+                        for relative_path, content in prepared.support_files.items():
+                            support_path = skill_file.parent / relative_path
+                            support_path.parent.mkdir(parents=True, exist_ok=True)
+                            support_path.write_text(content, encoding="utf-8")
+                            register_support_file_in_manifest(
+                                apply_result["manifest_path"],
+                                source_path=support_path,
+                                relative_path=relative_path,
+                                kind="reference-spillover",
+                            )
+                        pruned_references = prune_auto_reference_files(
+                            skill_file.parent, name, max_reference_files
                         )
-        candidates.append(candidate)
+                        if pruned_references:
+                            candidate["pruned_reference_files"] = pruned_references
+                        applied += 1
+                        candidate["status"] = "applied"
+                        if cfg.require_restore_drill:
+                            block_mutations_for_drill = True
+                            drill_gate = evaluate_restore_drill_gate(
+                                drill_state_path,
+                                require=True,
+                            )
+            candidates.append(candidate)
+        except Exception as exc:  # noqa: BLE001 - per-candidate boundary
+            # (roadmap U76, carried P5): one poison candidate (bad patch,
+            # unreadable skill file, failed verify) becomes a recorded
+            # error row; the loop continues and the run JSON always lands.
+            candidate["status"] = "failed"
+            candidate["error"] = f"{type(exc).__name__}: {exc}"
+            candidates.append(candidate)
+            continue
 
     final_gate = evaluate_restore_drill_gate(
         drill_state_path,
@@ -1246,6 +1255,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "planned": len([c for c in candidates if c.get("status") in {"planned", "applied"}]),
             "applied": applied,
             "skipped": len([c for c in candidates if c.get("status") == "skipped"]),
+            "failed": len([c for c in candidates if c.get("status") == "failed"]),
         },
         "candidates": candidates,
     }

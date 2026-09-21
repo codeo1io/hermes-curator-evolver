@@ -524,6 +524,16 @@ def _format_bootstrap_result(result: dict, output_format: str = "text") -> str:
             f"✓ Backfilled {backfill.get('sessions_imported', 0)} session(s), "
             f"{backfill.get('tool_events_imported', 0)} tool event(s)"
         )
+        # U74/U76 disclosures (N5 pattern): dedupe skips and undecodable
+        # legacy files are surfaced in the human summary, not only --json.
+        if backfill.get("tool_events_skipped_duplicate"):
+            backfill_line += (
+                f" · {backfill['tool_events_skipped_duplicate']} duplicate tool event(s) skipped"
+            )
+        if backfill.get("legacy_skipped_undecodable"):
+            backfill_line += (
+                f" · {backfill['legacy_skipped_undecodable']} undecodable legacy file(s) skipped"
+            )
         if backfill.get("sessions_failed"):
             # Assessment N7: failed sessions must be visible in the human
             # summary, not only in --format json.

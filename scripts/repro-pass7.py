@@ -3,13 +3,13 @@
 In-tree canonical copy (cycle-7 independent-review finding 5): the work-order
 citations previously resolved only to the ephemeral /tmp path. REPO is derived
 from this file's location so the harness runs from any checkout; run as
-`python scripts/repro-pass7.py` and expect `35/35 probes matched sane
-expectation`.
+`python scripts/repro-pass7.py` and expect `43/43 probes matched sane
+expectation` (35 pass-7 + 8 pass-8 records added in cycle 8).
 """
 import json
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO))
 from hermes_curator_evolver.candidates import looks_like_error, _text_bears_failure  # noqa: E402
 from hermes_curator_evolver.storage import EvidenceStore  # noqa: E402
 from hermes_curator_evolver import auto_evolve  # noqa: E402
-from hermes_curator_evolver.backfill import _iter_state_sessions  # noqa: E402
+from hermes_curator_evolver.backfill import _iter_state_sessions, backfill_sessions  # noqa: E402
 
 OUT = []
 def rec(name, got, expect, verdict=None):
@@ -173,6 +173,58 @@ try:
     rec("P1 replacement-injection stays fixed", "NEW \\1 BLOCK" in new and "old" not in new, True)
 except Exception as exc:
     rec("P1 replacement-injection stays fixed", f"{type(exc).__name__}: {exc}", True)
+
+print("== P8: pass-8 adversarial probes (cycle-8 U73/U74/U76) ==")
+p8_cases = [
+    # F1: comma-joined success phrase must not clear a LATER failure claim.
+    ("f1a 'no tests failed, deploy failed: connection refused'", "no tests failed, deploy failed: connection refused", True),
+    ("f1b 'all tests passed cleanly, but the build failed with exit code 1'", "all tests passed cleanly, but the build failed with exit code 1", True),
+    # F3: in-band test is the range, not the enumerated set (226 IM Used).
+    ("f3 {'code': 226}", {"code": 226}, False),
+    # F4: integer and status-line payloads carry the range rule.
+    ("f4a {'status': 500}", {"status": 500}, True),
+    ("f4b {'status': '500 Internal Server Error'}", {"status": "500 Internal Server Error"}, True),
+]
+for label, payload, sane in p8_cases:
+    rec(label, looks_like_error(payload), sane)
+
+# F2: two id-less calls to the same tool in DIFFERENT messages of one
+# session must import as two events (session-unique fallback id).
+import tempfile as _tf
+_p8 = Path(_tf.mkdtemp(prefix="pass8-f2-"))
+_legacy = _p8 / "legacy"
+_legacy.mkdir()
+(_legacy / "session_p8.json").write_text(
+    json.dumps(
+        {
+            "session_id": "p8",
+            "started_at": datetime.now(UTC).isoformat(),
+            "last_active": datetime.now(UTC).isoformat(),
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"function": {"name": "web_search", "arguments": "{\"q\": \"a\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "web_search", "arguments": "{\"q\": \"b\"}"}}]},
+            ],
+        }
+    ),
+    encoding="utf-8",
+)
+_store8 = EvidenceStore(_p8 / "ev.sqlite")
+_r8 = backfill_sessions(sessions_dir=_legacy, store=_store8, days=365)
+rec("f2 two id-less same-tool calls in different messages import as 2 events", _r8["tool_events_imported"], 2)
+_r8b = backfill_sessions(sessions_dir=_legacy, store=_store8, days=365)
+rec("f2 re-import stays idempotent with disclosed skips", (_r8b["tool_events_imported"], _r8b["tool_events_skipped_duplicate"]), (0, 2))
+_store8.close()
+
+# P8 (carried): an undecodable legacy file is counted and skipped, never
+# aborting the import.
+_p8b = Path(_tf.mkdtemp(prefix="pass8-p8-"))
+_legacy2 = _p8b / "legacy"
+_legacy2.mkdir()
+(_legacy2 / "session_bad.json").write_bytes(b"{\"session_id\": \"bad\", \"\xff\": \"\xfe\"}")
+_store9 = EvidenceStore(_p8b / "ev.sqlite")
+_r9 = backfill_sessions(sessions_dir=_legacy2, store=_store9, days=365)
+rec("p8 undecodable legacy file counted and skipped", (_r9["legacy_skipped_undecodable"], _r9["files_failed"]), (1, 0))
+_store9.close()
 
 print()
 fails = 0

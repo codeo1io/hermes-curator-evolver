@@ -1342,3 +1342,55 @@ def test_u68_burst_events_satisfy_min_evidence(tmp_path):
     assert _eligible_skill_rows(report2, min_evidence=2) == []
     store.close()
     store2.close()
+
+
+def test_u76_poison_candidate_does_not_abort_apply_loop(tmp_path, monkeypatch):
+    # U76 (pass-8 P5): a candidate whose guarded apply raises must become
+    # a recorded failed row — the loop continues, later candidates still
+    # apply, and the run JSON always lands with a disclosed failed count.
+    db = tmp_path / "evidence.sqlite"
+    store = EvidenceStore(db)
+    skills = tmp_path / "skills"
+    backups = tmp_path / "backups"
+    alpha_file = _write_skill(skills, "alpha-playbook")
+    beta_file = _write_skill(skills, "beta-playbook")
+    for name in ("alpha-playbook", "beta-playbook"):
+        store.record_tool_call(
+            tool_name="terminal",
+            args={"skills": [name]},
+            result={"exit_code": 0, "output": f"sample-{name}"},
+            session_id="s0",
+        )
+
+    real_apply = auto_evolve.apply_guarded_patch
+
+    def poison_alpha(*args, **kwargs):
+        target = str(kwargs.get("target_path") or (args[0] if args else ""))
+        if "alpha-playbook" in target:
+            raise RuntimeError("poison patch")
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(auto_evolve, "apply_guarded_patch", poison_alpha)
+
+    result = run_auto_evolve(
+        AutoEvolveConfig(
+            db_path=db,
+            skills_dir=skills,
+            backup_dir=backups,
+            days=30,
+            min_evidence=1,
+            apply_low_risk=True,
+            approve_auto_apply=True,
+        )
+    )
+
+    by_name = {c["skill_name"]: c for c in result["candidates"]}
+    assert by_name["alpha-playbook"]["status"] == "failed"
+    assert "RuntimeError: poison patch" in by_name["alpha-playbook"]["error"]
+    assert by_name["beta-playbook"]["status"] == "applied"
+    assert result["summary"]["failed"] == 1
+    assert result["summary"]["applied"] == 1
+    # alpha was left untouched (the poison raised before any write landed);
+    # beta received exactly one managed block.
+    assert "curator-evolver:auto:start" not in alpha_file.read_text(encoding="utf-8")
+    assert beta_file.read_text(encoding="utf-8").count("<!-- curator-evolver:auto:start -->") == 1
