@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -872,3 +872,83 @@ def test_u67_backfill_text_output_stays_silent_without_truncation(capsys, monkey
     out = capsys.readouterr().out
     assert "Sessions metadata seen: 1" in out
     assert "Metadata scan truncated" not in out
+
+
+def test_u74_id_less_calls_in_different_messages_import_separately(tmp_path):
+    # F2 (pass-8): the old ``tool-{index}`` fallback was unique only within
+    # ONE message, so two id-less calls to the same tool in different
+    # messages collided on the (session, task_id, tool_name) dedupe key and
+    # silently imported as ONE event. The fallback is now session-unique;
+    # first import captures both events and re-import stays idempotent with
+    # every dedupe skip disclosed.
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    now = datetime.now(UTC).isoformat()
+    payload = {
+        "session_id": "session-idless",
+        "session_start": now,
+        "last_updated": now,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"q": "a"})},
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"q": "b"})},
+                    }
+                ],
+            },
+        ],
+    }
+    (sessions / "session_idless.json").write_text(json.dumps(payload), encoding="utf-8")
+    store = EvidenceStore(tmp_path / "ev.sqlite")
+    try:
+        first = backfill_sessions(sessions_dir=sessions, store=store, days=30)
+        assert first["tool_events_imported"] == 2
+        second = backfill_sessions(sessions_dir=sessions, store=store, days=30)
+        assert second["tool_events_imported"] == 0
+        assert second["tool_events_skipped_duplicate"] == 2
+    finally:
+        store.close()
+
+
+def test_u76_undecodable_legacy_file_is_counted_and_skipped(tmp_path):
+    # P8 (carried): a legacy transcript with undecodable bytes must not
+    # abort the whole import (UnicodeDecodeError subclasses neither OSError
+    # nor json.JSONDecodeError); it is counted with its own disclosure
+    # counter while healthy files keep importing.
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "session_bad.json").write_bytes(b'{"session_id": "s-bad", "\xff\xfe": "\xfd"}')
+    now = datetime.now(UTC).isoformat()
+    (sessions / "session_good.json").write_text(
+        json.dumps(
+            {
+                "session_id": "s-good",
+                "session_start": now,
+                "last_updated": now,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = EvidenceStore(tmp_path / "ev.sqlite")
+    try:
+        result = backfill_sessions(sessions_dir=sessions, store=store, days=30)
+        assert result["legacy_skipped_undecodable"] == 1
+        assert result["files_failed"] == 0
+        assert result["sessions_failed"] == 0
+        assert result["sessions_seen"] == 2
+    finally:
+        store.close()
