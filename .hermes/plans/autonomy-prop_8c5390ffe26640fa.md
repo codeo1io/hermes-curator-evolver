@@ -666,3 +666,105 @@ Craft rules for the next implement batch: adversarial probes lift into permanent
 - Pre-fix `error_events` rows stay poisoned by design (append-only history); U58's reconciliation must read around them.
 - CI has no ruff job (P14's standing evidence: drift 65->63->64->63, ungated) - U56 adds the gate at 63, never rises, ratchets down.
 - Fork-internal PR is the campaign's ship shape going forward (branch push -> PR -> CI by head sha -> reconcile); upstream PR #26 remains closed, fork `main` merges only at the operator gate.
+
+## Extension 2026-09-22 - maintenance cycle 3 (run 3ed5d14a, pre-cycle-7 base)
+
+### Context and reconciliation (read before acting on this block)
+
+- Written from run 3ed5d14a's `assess` + `research` phases (attempts 579cf498, 411a6de9) in a worktree 6 commits behind origin/main. This file therefore ends at the cycle-6 execution outcome and does NOT contain cycles 7-8 (U63-U72 extension, U73-U76 packet, KTD31-KTD38, review folds). New U-numbers below start at U77 and the proposed decision at KTD39 so they cannot collide with origin/main's taken U63-U76/KTD31-KTD38. On any merge/rebase onto origin/main: append this block AFTER main's cycle-8 status block, re-anchor line cites (they are pre-cycle-7 addresses), and if main has by then unitized the same defects, drop this block's U77/U78 in favor of main's units and keep the evidence notes.
+- origin/main cycle-8 state for cross-reference (independent review attempt b52ac9e3, 2026-09-21): U73/U74/U76 implemented and verified; U75 first alternate, U56 held; review's open P3/P4 defects (classifier NaN crash, zero-type semantics, backfill human-output gaps, legacy per-session boundary) are NOT yet unitized on main — U77/U78 below register them from this run's independent pre-cycle-7 assessment.
+
+### Baselines (this run, pre-cycle-7 worktree)
+
+- pytest 287 passed in ~31.6s. Ruff 12 errors via the project venv binary (0.15.10, ignores the repo rule set); the PATH binary (0.16.7) applies the repo rules — counts comparable only binary-to-binary (standing P14/U56 caveat).
+
+### Evidence-backed units
+
+**U77 - classifier numeric-domain hardening (NaN/Infinity/Overflow + zero-type semantics).** Files: `candidates.py`. The exit-code/status coercion crashes the whole pipeline on non-finite floats: `int(value)` raises ValueError on NaN and OverflowError on +/-Infinity (this worktree: `candidates.py:290`; origin/main post-U73: `_status_signal` `candidates.py:191` with the pre-existing exit-code twin at `:363`). Type-inconsistent zero semantics persist: `{"status": 0}` and `{"status": "0"}` disagree (main review P3; this pre-U73 tree ignores integer status keys entirely — same defect class, two eras).
+- AC: every numeric coercion of `status`/`code`/`exit_code`/`returncode` is domain-guarded — NaN, +/-Inf, and non-integral floats classify as a non-numeric signal and never raise; integer `0` and string `"0"` produce the SAME verdict, for both success- and failure-polarity keys; a parametrized digit-domain sweep test covers int, str-int, float-integral, float-nonintegral, NaN, +Inf, -Inf for each honored key (comma forms included per the cycle-6 L1 lesson); corpus rows added for each crashing shape.
+- E: pytest parametrized matrix green; probe corpus runs with zero tracebacks and disclosed classifications (no silent drops); exit code 0 across a malformed-transcript corpus that includes NaN/Inf rows.
+
+**U78 - legacy backfill containment + disclosure parity.** Files: `backfill.py`, `cli.py`. The legacy import path aborts the WHOLE run on one bad session: no per-session exception boundary, and the gate at this worktree's `backfill.py:525` catches only `(OSError, json.JSONDecodeError)` — `UnicodeDecodeError` subclasses neither (main: `_import_session_data` unwrapped at `:560`). Disclosure gap: `tool_events_skipped_duplicate` + `legacy_skipped_undecodable` counters exist (U74/U76 on main) but are missing from the backfill-sessions HUMAN renderer (main `cli.py:895-930`; the bootstrap renderer `:529-535` has them).
+- AC: legacy import wraps each session in its own boundary — a bad session is skipped and counted, never aborts the run; `UnicodeDecodeError` is caught by the undecodable gate and counted; every counter present in JSON output also renders in HUMAN output, asserted by a test that walks the JSON keys and checks each appears in the human render; exit code stays 0 with skips disclosed.
+- E: corpus grows with a NaN-status row and an undecodable-legacy row, both importing cleanly with counted skips; pytest parity test green; a manual `backfill-sessions` run shows both counters in human output.
+
+**U79 - MRU early-terminate probing for the state-db branch.** Files: `backfill.py`. The state-db branch (mutually exclusive with the dir scan, this worktree `backfill.py:443-449`) enumerates full history; the host's SessionDB orders MRU-first SQL-side with LIMIT/OFFSET (`hermes_state_sessions.py:1112` in host fork b4528e6c98, 2026-09-21: `ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC, s.started_at DESC, s.id DESC ... LIMIT ?`; the plugin binds to that class). Cap-the-RESULT discipline (cycle-6 L2 lesson) stays: ordering precedes limits.
+- AC: state-db ingest pages sessions MRU-first and terminates at the first page fully covered by prior ingests (watermark = newest already-imported activity timestamp) with a bounded overlap re-probe window (default >=1 page) for late updates; early termination discloses counters (pages_scanned, terminated_early: true) exactly like other truncation disclosures; re-run over an unchanged DB ingests zero new events (idempotence preserved); the legacy dir branch (already mtime-sorted, `:149-150`) is unchanged.
+- E: fake state-DB fixture where all sessions predate the watermark proves early exit (pages read < total pages) AND zero missed sessions when a fresh one lands inside the overlap window; pytest; a note that host line cites must be re-derived per host version (precedent: :1365 -> :1112 drift).
+
+**U80 - compression/branch/delegation-aware evidence linking.** Files: `backfill.py`, `storage.py`. The host forks session ids on history compaction, branching, and delegation — its own session queries resolve recency through an ancestry CTE over `compression_parent`/`_branched_from`/delegate edges (`hermes_state_sessions.py:1096-1110`). The plugin keys evidence by raw session_id, so a long-lived working session's usage evidence fragments at every compaction event.
+- AC: state-db ingest resolves each session's ancestry root once per ingest and records `root_session_id` beside `session_id`; `summary()`/reports attribute usage to the root while retaining per-leaf rows (append-only history untouched); a two-generation compaction fixture shows both leaves' events attributed to one root usage line; non-forked sessions behave identically to today; linked counts disclosed.
+- E: pytest with a parent + compressed-child fake ancestry chain; before/after report diff on the fixture; disclosed `linked_events` counter.
+
+**U81 - host-budget-aligned generation caps.** Files: `auto_evolve.py`. Plugin-local caps (`_MAX_SKILL_CONTENT_CHARS`/`_AUTO_LOADED_SKILL_MAX_CHARS`, `:53`/`:55`) drift from the host, which now warns when a SKILL.md body outgrows its context budget (upstream PR #118884 merged; upstream releases are ~weekly as of v2026.9.21). Complements U32 (measurement), does not replace it.
+- AC: generation-time cap derives from the host's budget verdict when the host exposes one (verdict surface re-derived per host version), with the existing local caps as floor/fallback; a SKILL.md the host would refuse on budget grounds is never proposed un-trimmed; fallback hosts (pre-verdict) keep current behavior, disclosed; propose output names the effective cap and its source.
+- E: pytest with a stubbed budget verdict forcing refusal (proposal trimmed or withheld); scratch auto-run keeps generated size <= budget; disclosure line present.
+
+**U82 - review-queue busy-retry parity.** Files: `review_queue.py`. The review queue's SQLite connections lack the busy-retry discipline the evidence store got in U45 (`storage.py:66-97` WAL layer: busy_timeout, journal_size_limit, per-path lock).
+- AC: review-queue connections share the evidence store's connection hardening (shared helper — cap-unification lesson applies); a concurrent-holder test bounds queue wait instead of erroring; connection-layer only, no schema migration.
+- E: pytest lock-bounded test mirroring the U45 test but with a WIDE margin window (do not inherit its marginal 15.0s-vs-15.11s tightness; see the U56 widened-bound note); first green without interleaved A/B acceptable when the margin is wide.
+
+**U83 - restore-drill manifest-path validation parity (verify-and-close).** Files: `restore_drill.py`. Rollback validates manifest backup/target paths under the skills dir (cycle-1 U3/N1 hardening); the drill path reads manifest JSON with no equivalent validation and no JSON-parse containment in this tree.
+- AC: either the drill routes manifests through the same validated loader (close as fixed, with cite) or the gap is hardened in the same change — the drill refuses tampered manifests exactly like rollback and survives corrupt manifest JSON with a clean error; one tampered-manifest drill test passes.
+- E: pytest tampered-manifest drill test; if origin/main already hardened the drill in cycles 7-8, close with the main-side cite and no code change.
+
+### Decisions proposed (stewardship to ratify — not effective until ratified)
+
+KTD39 (PROPOSED). Relax U62's technical gate (KTD28) to liveness-only single-gating: drop the PR #101237 merge condition once the deployed index shows a 30-day daily-generation streak; merge state becomes a disclosed notice, not a gate. Rationale (research pass 2026-09-22): the deployed index runs independently of the PR — HTTP 200 via 301 to nousresearch.github.io/hermes-agent/docs/api/skills-index.json, `generated_at` 2026-09-22T07:53:16Z (same-day, daily cadence), `skill_count` 100,496 (+2,170 in 2 days; 98,326 on 09-20), 40.7MB — while the PR has sat open/unmerged 20+ days (re-verified via gh this run). If ratified, U62's AC additionally requires the report to disclose `generated_at`, `skill_count`, and the fetch URL chain.
+
+### Fresh evidence for existing units (append-only notes; no AC changes)
+
+- **U69 (attribution from the host)** — payload now fully specified at the source: `on_skill_lifecycle` emits `action`/`skill_name`/`provenance`/`task_id`/`session_id`/`use_count`/`reused`/`reuse_after_patch`, best-effort and only after a landed state change (`tools/skill_usage.py:468-480`, host fork b4528e6c98). Upstream #116004 (one-shot runs stop authoring/loading process skills) makes heuristic inference noisier exactly where the hook stays authoritative — strengthens sequencing U69 immediately after its satisfied U74 dependency (re-read KTD26 first, per main's cycle-8 status).
+- **U56 (hygiene)** — the S10 raw-traceback class re-confirmed in this worktree (undecodable inputs surface raw tracebacks; rollback has containment the rollback surface itself lacks). No AC change.
+- **U32 / U5 vs U81** — U32 measures usage-x-size; U81 aligns generation caps with the host's refusal verdict; keep separate units, share the cap helper.
+- **Drill scratch retention** (cycle-1 AC: retention bound or `--keep` default) is still open in this worktree's tree — verify against origin/main before scheduling (cycles 7-8 may have touched drill surfaces).
+- Rejected-direction check: U77-U83 touch none of the rejected directions.
+
+### Deferred research candidate (no unit yet)
+
+- Versioned local snapshots of curated skills (content-addressed; optional skillbox-compatible manifest). Demand signal: kitze/skillbox 226 stars in 5 days (created 2026-09-17, self-hosted versioned skill library). Re-open when (a) skillbox's manifest format is stable >=30 days, or (b) restore-drill/rollback work independently needs content-addressed snapshots. Marketplace/cross-agent export stays rejected.
+
+### Sequencing
+
+On origin/main the cycle-9 opener stays U75 + U56 (per main's cycle-8 status block). This block's units are cycle-9+ candidates in priority order: U77 -> U78 -> U79/U80 -> U82/U83 -> U81; KTD39 ratification can land any stewardship cycle (evidence refresh is a research-pass duty).
+
+### Research sources (2026-09-22)
+
+Full ranked candidate list with warrants, rejections, and probe commands: `docs/ideation/2026-09-22-cycle-3-extension-research.md`. Upstream/index/competitor evidence: gh API (pulls/101237 open; releases v2026.9.21/.9.14/.9.11; merged #118884/#117684/#116004/#112218/#113118; issues #67582/#77264/#66180 unchanged) and the deployed skills index (URL chain above). Host source cites are from the local fork checkout at b4528e6c98 (2026-09-21); re-derive line cites per host version.
+
+## Execution outcome 2026-09-22 - maintenance cycle 3 (pre-review compounding)
+
+Provenance: run `3ed5d14a80a245f3bb71735d577be08a`; assess `579cf498`, research `411a6de9`, roadmap `453ecae9` (pre-image `1cabd3bf...` -> post `c3dac983...`, 668->733 lines), prioritize `1daa24af`, stewardship `88ad3d72`, implement `4d487d36`, targeted_tests `b4017851`, full_tests `9f21b04c`. Pre-review by design: review/ship phases run after this fold; their outcomes land in the next cycle's assessment. Roadmap discipline unchanged: pure append, prior sections byte-identical.
+
+### Implemented state (this worktree, pre-review)
+
+- Batch U82 + U83 ("secondary-surface hardening parity") per `docs/prioritization/2026-09-22-cycle-3-batch.md` and `docs/stewardship/2026-09-22-cycle-3-stewardship-request.md`: 4 files, +405/-10 - `review_queue.py` (+~140, U45-parity hardening mirrored in-module), `restore_drill.py` (+56/-9, manifest trust via `guarded_apply._resolve_within` + UnicodeDecodeError containment), `tests/test_review_queue.py` (+70), `tests/test_restore_drill.py` (+82). `storage.py`/`guarded_apply.py` untouched except sanctioned reuse (busy-error import; call-time `_resolve_within` only).
+- Validation: 287 -> 293 passed (+6 batch tests); targeted 34 passed on both interpreters (PATH python 3.11.15/pytest 9.1.1 and project venv/pytest 8.x); full suite `293 passed in 39.64s`, exit 0 both arms. Ruff 0.15.10 (the ONLY binary in this environment, #5442): full tree 12 flat; sole touched-file finding (F401 `pytest` unused, `tests/test_restore_drill.py:5`) pre-existing at HEAD.
+- U82 vs its AC: the AC named a shared helper; stewardship routed the mirror-in-`review_queue.py` variant instead to preserve that file's 0-main-commit merge-free diff (its rationale: `storage.py` is main-modified +17/-4). Hardening semantics identical (busy_timeout + journal_size_limit per connection, WAL once-per-path with DELETE fallback, bounded write retry reusing `storage._is_busy_error`). If a shared helper is ever extracted, that is its own unit.
+- U83 closed in-tree: manifest `backup_path` (target + support entries) must resolve within the manifest's backup dir or refuse with rollback's verbatim `unsafe-backup-path`; UnicodeDecodeError contained at manifest + state readers. 4 tests (tampered target/support, undecodable manifest/state).
+
+### Packet status after cycle 3 (this block)
+
+- **U82, U83**: implemented + validated; close when review PASSes and CI is green on the shipped sha.
+- **U79** (first alternate): NOT pulled in - pull-in criteria were green+flat (met) + window remains (not met: the cycle moved into validation). Remains next in this block's sequencing; standing order after close: U79 -> U80/U81 are post-merge; U77/U78 below.
+- **U77/U78**: live defects in this tree but gated to origin/main's tree per the value-per-merge-conflict rule (L29) - `candidates.py`/`backfill.py`/`cli.py` are main-rewritten since this worktree's merge-base and main's cycle-8 review already holds them as open P3/P4 findings. Supporting evidence for main's units, not duplicates.
+- **U80/U81**: stay post-merge (schema lands once; host budget-verdict surface settles).
+- **KTD39**: remains PROPOSED - liveness evidence recorded (research pass, index daily-fresh while PR #101237 open); ratification is a stewardship-cycle duty, evidence refresh a research-pass duty.
+- **Follow-ups registered by implement** (not yet unitized): `guarded_apply` rollback readers' UnicodeDecodeError gap (belongs on main's tree - the module was reuse-only by contract this cycle); `_check_evidence_refs` opens the manifest-named evidence DB path without containment (read-only, same L32 class); pre-existing F401 cleanup (U56 line).
+
+### Durable lessons (compounded)
+
+Full set in `docs/learnings/2026-09-22-cycle-3-compounding.md` - rules **L29-L36** continuing main's L1-L28 (renumber there on merge if main has taken L29+ first). Highest-value three:
+
+1. **Value-per-merge-conflict, not raw severity** (L29) - on a stale worktree, per-file main-commit counts since merge-base decide where a fix lands; a high-scoring fix in a main-rewritten file is a discarded diff.
+2. **Pragmas split by persistence** (L30) - `journal_mode` is a file property (once per path); `busy_timeout`/`journal_size_limit` are per-connection (every `_connect`). Every connection-layer change ships a second-connection pragma assertion.
+3. **The UnicodeDecodeError tuple trap** (L31) - `except (OSError, json.JSONDecodeError)` misses undecodable bytes (third recurrence this cycle, one still open in `guarded_apply`); catch `ValueError` or name it, and ship an undecodable fixture per JSON reader.
+
+Craft rules for the next implement batch live at the foot of the learnings doc (two-interpreter validation, wide-margin contention tests replacing marginal ones, tampered-path + undecodable fixtures per reader, compile gate between edits and suite).
+
+### Small notes for the next cycle
+
+- Re-derive the worktree-vs-main drift before any selection (L29 table); 6 commits behind at cycle-3 start, may have moved.
+- `unsafe-backup-path` is now the shared refusal vocabulary across rollback AND drill - any new manifest reader reuses it verbatim (L32).
+- This worktree line's baselines: pytest 293; ruff 12 on 0.15.10 (sole binary, #5442). `scripts/repro-pass7.py` does not exist here by construction (cycle-7 main addition) - corpus gates run on main's tree only.
+- Review of this cycle's batch should reproduce the two-interpreter arms, check refusal-string parity with `guarded_apply`, and re-derive the fold-gate digest on the unchanged tree.

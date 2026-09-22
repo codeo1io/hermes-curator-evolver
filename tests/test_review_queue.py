@@ -1,6 +1,10 @@
-import pytest
+import sqlite3
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from hermes_curator_evolver.candidates import (
     CANDIDATE_TYPE_MEMORY,
@@ -147,3 +151,67 @@ def test_review_queue_persists_across_instances(tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["id"] == c.id
+
+
+def test_u82_connection_sets_busy_timeout_and_journal_limits(tmp_path):
+    """U82: every queue connection carries the U45-class hardening pragmas."""
+
+    q = ReviewQueue(tmp_path / "queue.sqlite")
+    conn = q._connect()
+    try:
+        timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout == 5000
+        mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode == "wal":
+            limit = conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert limit == 64 * 1024 * 1024
+    finally:
+        conn.close()
+
+
+def test_u82_enqueue_lands_under_external_holder_with_wide_margin(tmp_path):
+    """U82 parity reproducer: a queue write under an external EXCLUSIVE holder.
+
+    Mirrors the evidence store's U45 bounded-write test
+    (test_u45_hook_writes_are_bounded_under_one_external_holder) but with a
+    WIDE margin by design (prioritize-phase mandate): the holder releases at
+    ~6s, past one busy_timeout window; the hardened connection must absorb
+    the hold across the bounded retry ladder and land the enqueue instead of
+    raising OperationalError (the pre-U82 behaviour: default 5s timeout, no
+    busy pragma, no retry).
+    """
+
+    q = ReviewQueue(tmp_path / "queue.sqlite")
+    q.enqueue(_candidate(CANDIDATE_TYPE_MEMORY, title="seed"))
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        conn = sqlite3.connect(str(q.db_path), timeout=30.0)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            held.set()
+            release.wait(timeout=6.0)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(timeout=5.0)
+        started = time.monotonic()
+        inserted = q.enqueue(
+            _candidate(CANDIDATE_TYPE_REPLAY_BENCHMARK, title="contended")
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(timeout=10.0)
+
+    assert inserted is True
+    assert elapsed >= 5.0, elapsed
+    assert elapsed < 12.0, elapsed
+    rows = q.list_candidates()
+    assert {row["title"] for row in rows} == {"seed", "contended"}

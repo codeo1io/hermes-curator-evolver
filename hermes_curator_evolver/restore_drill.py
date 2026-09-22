@@ -25,6 +25,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# NOTE: guarded_apply imports this module at import time (it records drill
+# state after each apply), so the ``_resolve_within`` containment helper is
+# imported lazily at call time to avoid a circular top-level import.
+
 DRILL_STATE_FILENAME = "restore-drill-state.json"
 DRILL_REPORT_FILENAME = "restore-drill-report.json"
 
@@ -68,7 +72,10 @@ def _read_drill_state_with_error(state_path: str | Path) -> tuple[dict[str, Any]
         return {}, None
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    # UnicodeDecodeError subclasses neither OSError nor JSONDecodeError; an
+    # undecodable state file must surface as a gate failure, not a
+    # traceback (roadmap U83; same containment class as backfill P8).
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {}, f"state-unreadable:{exc.__class__.__name__}"
     if not isinstance(parsed, dict):
         return {}, "state-unreadable:not-a-json-object"
@@ -218,8 +225,18 @@ def _restore_support_files(
     *,
     support_files: list[dict[str, Any]],
     drill_root: Path,
+    manifest_root: Path,
 ) -> dict[str, Any]:
-    """Restore any recorded support files (references/templates/scripts/assets)."""
+    """Restore any recorded support files (references/templates/scripts/assets).
+
+    Entries whose relative path escapes ``drill_root`` are warned
+    (pre-existing behaviour); entries whose named ``backup_path`` fails
+    the manifest-root containment rollback applies are REFUSED with
+    ``unsafe-backup-path`` (U83 parity — a tampered manifest must not name
+    arbitrary readable files).
+    """
+
+    from .guarded_apply import _resolve_within  # local: breaks import cycle
 
     check: dict[str, Any] = {
         "name": "support-files-recovery",
@@ -262,6 +279,12 @@ def _restore_support_files(
             entries.append(entry)
             continue
         backup_path = Path(backup_path_raw)
+        if _resolve_within(backup_path, manifest_root) is None:
+            entry["status"] = "fail"
+            entry["reason"] = "unsafe-backup-path"
+            failures += 1
+            entries.append(entry)
+            continue
         if not backup_path.exists():
             entry["status"] = "fail"
             entry["reason"] = "backup-missing"
@@ -408,9 +431,18 @@ def run_restore_drill(
     leaves the directory in place so the operator can inspect it. Supply
     ``target_dir`` to control the destination. The live skill file, the
     live evidence DB, and any live scheduler units are never touched.
+
+    The manifest is untrusted input (roadmap U83 — parity with the
+    rollback path's U3/U35/N1 discipline): every manifest-named
+    ``backup_path`` must resolve within the manifest's own backup
+    directory or that check fails with ``unsafe-backup-path`` and nothing
+    is read from the outside path. The drill still never writes outside
+    ``drill_root``.
     """
 
     manifest_file = Path(manifest_path).resolve()
+    from .guarded_apply import _resolve_within  # local: breaks import cycle
+
     started = _utc_now()
     report: dict[str, Any] = {
         "schema_version": "0.1",
@@ -440,7 +472,9 @@ def run_restore_drill(
 
     try:
         manifest = _load_manifest(manifest_file)
-    except (OSError, json.JSONDecodeError) as exc:
+    # UnicodeDecodeError subclasses neither OSError nor JSONDecodeError; a
+    # legacy-undecodable manifest (P8 class) must fail the report cleanly.
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         report["errors"].append(f"manifest-not-readable:{exc.__class__.__name__}")
         report["drill_finished_at"] = _utc_now()
         record_drill_in_state(
@@ -480,6 +514,21 @@ def run_restore_drill(
             "status": "fail",
             "reason": "manifest-missing-backup-path",
         }
+    elif (
+        _resolve_within(Path(str(backup_path_raw)), manifest_file.parent) is None
+    ):
+        # U83 parity: same containment and refusal string the rollback path
+        # applies to manifest-named backups (guarded_apply U3/N1). A tampered
+        # manifest must not turn the drill into an arbitrary-file reader,
+        # even though the drill never writes outside drill_root.
+        report["errors"].append("unsafe-backup-path")
+        target_check = {
+            "name": "target-recovery",
+            "status": "fail",
+            "reason": "unsafe-backup-path",
+            "backup_path": str(backup_path_raw),
+            "restored_path": None,
+        }
     else:
         target_check = _restore_target_file(
             backup_path=Path(str(backup_path_raw)),
@@ -496,6 +545,7 @@ def run_restore_drill(
     support_check = _restore_support_files(
         support_files=support_files,
         drill_root=drill_root,
+        manifest_root=manifest_file.parent,
     )
     report["checks"].append(support_check)
 
