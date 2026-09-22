@@ -57,6 +57,21 @@ Read directly — stronger than cycle-1's doc-level reading:
   ships `curator_evidence_report` that way).
 
 ### E3. Live-secret experiment (end-to-end, scratch Hermes home)
+
+> **Annotation 2026-09-22 (decision KTD39, maintenance cycle 9):** the
+> token string recorded verbatim below is **treated as synthetic under
+> KTD39** (presumptively synthetic but unproven — the experiment record
+> itself states no provenance either way) — it was generated for this
+> experiment against a scratch Hermes home, is not known to have been
+> issued to a real account, and (verified via the GitHub API on
+> 2026-09-22) raises zero secret-scanning alerts on this repository. It
+> is kept verbatim as the forensic record of the experiment that
+> motivated the credential-scrub
+> pipeline (roadmap U77, now implemented at ingest, at every embed
+> point, and in skill validation). If any maintainer believes a token
+> here was ever real, rotation is the maintainer-side fix — the string
+> itself stays for the record.
+
 Recorded a `skill_manage` result containing `TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a`
 ×4, ran `auto-run --apply-low-risk --approve-auto-apply`:
 - Managed block written with the token **verbatim** ×4 (`SECRET … in SKILL.md: True`);

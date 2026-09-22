@@ -23,6 +23,7 @@ from typing import Any
 
 import yaml
 
+from .hygiene import stats_snapshot as _scrub_stats, scrub_text
 from .paths import hermes_home
 
 logger = logging.getLogger(__name__)
@@ -419,7 +420,12 @@ def _format_evidence_rows(evidence_rows: list[dict[str, Any]], *, limit: int = 5
     lines: list[str] = []
     for row in evidence_rows[:limit]:
         marker = "error" if row.get("is_error") else "ok"
-        preview = str(row.get("result_preview") or "").replace("\n", " ").strip()
+        # U77 embed-point scrub (defense in depth): the preview was
+        # scrubbed at ingest, but a row stored BEFORE that fix — or by an
+        # older store — must not reach a published SKILL.md. Scrub BEFORE
+        # the length cut so a credential straddling the boundary cannot
+        # leak its head.
+        preview = scrub_text(str(row.get("result_preview") or ""))[0].replace("\n", " ").strip()
         if len(preview) > 220:
             preview = preview[:219] + "…"
         created = row.get("created_at") or "unknown-time"
@@ -565,7 +571,9 @@ def _format_evidence_reference(
         created = row.get("created_at") or "unknown-time"
         tool = row.get("tool_name") or "unknown-tool"
         marker = "error" if row.get("is_error") else "ok"
-        preview = str(row.get("result_preview") or "").replace("\x00", "").strip()
+        # U77 embed-point scrub — see _format_evidence_rows; spill files
+        # are published surfaces too.
+        preview = scrub_text(str(row.get("result_preview") or ""))[0].replace("\x00", "").strip()
         lines.extend([f"### {created} — `{tool}` {marker}", "", "```text", preview, "```", ""])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -827,7 +835,9 @@ def _build_semantic_query(report: dict[str, Any], *, eligible_names: set[str], l
         name = str(row.get("skill_name") or "")
         if name not in eligible_names:
             continue
-        preview = str(row.get("result_preview") or "").replace("\n", " ").strip()
+        # U77 embed-point scrub — see _format_evidence_rows; the semantic
+        # query leaves the process, treat it as a published surface.
+        preview = scrub_text(str(row.get("result_preview") or ""))[0].replace("\n", " ").strip()
         tool = str(row.get("tool_name") or "unknown-tool")
         lines.append(f"skill={name} tool={tool} result={preview}")
     if not lines:
@@ -936,6 +946,11 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     """
 
     cfg = config or AutoEvolveConfig()
+    # Credential-scrub disclosure (roadmap U77, KTD36): the run JSON
+    # states how many credential-shaped strings this pass redacted at the
+    # embed points (rows scrubbed at ingest are counted in backfill's
+    # own summary instead — this delta covers the defense-in-depth pass).
+    scrub_before = _scrub_stats()["scrubbed"]
     days = _bounded(cfg.days, minimum=1, maximum=3650, label="days")
     max_skills = _bounded(cfg.max_skills, minimum=1, maximum=25, label="max_skills")
     min_evidence = _bounded(cfg.min_evidence, minimum=1, maximum=1000, label="min_evidence")
@@ -1256,6 +1271,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "applied": applied,
             "skipped": len([c for c in candidates if c.get("status") == "skipped"]),
             "failed": len([c for c in candidates if c.get("status") == "failed"]),
+            "credentials_scrubbed": _scrub_stats()["scrubbed"] - scrub_before,
         },
         "candidates": candidates,
     }

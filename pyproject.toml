@@ -52,3 +52,19 @@ packages = ["hermes_curator_evolver"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.ruff]
+# Pinned lint surface (roadmap U80, cycle 9): freeze the rule set to what
+# ruff shipped when this repository's baselines were recorded — pyflakes
+# (F) plus the default pycodestyle subset (E4/E7/E9). Pinning `select`
+# explicitly keeps the gate stable across future ruff releases even though
+# the effective default set here matches it today. Recorded baselines for
+# the count ceiling: 63 findings in hermes_curator_evolver+tests plus 16 in
+# scripts (= 79) at ruff 0.16.7; 16 whole-tree at ruff 0.15.10 (the only
+# arm on the maintenance host). New code must add zero findings; clearing
+# the pre-existing backlog is U56's scope, which is why CI enforces the
+# ceiling rather than zero.
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

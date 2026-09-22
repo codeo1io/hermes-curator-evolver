@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from .hygiene import count_credentials
+
 AUTO_START = "<!-- curator-evolver:auto:start -->"
 AUTO_END = "<!-- curator-evolver:auto:end -->"
 
@@ -54,6 +56,19 @@ def validate_skill_file(path: str | Path) -> dict[str, Any]:
         return {"path": str(skill), "ok": False, "errors": [f"not valid UTF-8: {exc}"]}
     if "\x00" in text:
         errors.append("contains NUL byte")
+    # Credential hygiene (roadmap U77, cycle 9): a SKILL.md is a published
+    # surface on a public repository, and the auto-curation pipeline can
+    # embed tool-result previews — a credential-shaped string that
+    # survives to this file is a named error, not a warning, so a guarded
+    # apply rolls back instead of publishing it. Detection only: this
+    # validates without scrubbing and must not inflate the disclosed
+    # ``scrubbed`` operations counter (cycle-9 review F5).
+    credential_hits = count_credentials(text)
+    if credential_hits:
+        errors.append(
+            f"credential-shaped string(s) detected ({credential_hits} hit(s)); "
+            "skill content must be scrubbed before publishing (U77)"
+        )
     meta, err = _frontmatter(text)
     if err:
         errors.append(err)

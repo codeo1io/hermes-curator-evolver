@@ -3,8 +3,8 @@
 In-tree canonical copy (cycle-7 independent-review finding 5): the work-order
 citations previously resolved only to the ephemeral /tmp path. REPO is derived
 from this file's location so the harness runs from any checkout; run as
-`python scripts/repro-pass7.py` and expect `43/43 probes matched sane
-expectation` (35 pass-7 + 8 pass-8 records added in cycle 8).
+`python scripts/repro-pass7.py` and expect `48/48 probes matched sane
+expectation` (35 pass-7 + 8 pass-8 + 5 pass-9 records added in cycle 9).
 """
 import json
 import sys
@@ -225,6 +225,65 @@ _store9 = EvidenceStore(_p8b / "ev.sqlite")
 _r9 = backfill_sessions(sessions_dir=_legacy2, store=_store9, days=365)
 rec("p8 undecodable legacy file counted and skipped", (_r9["legacy_skipped_undecodable"], _r9["files_failed"]), (1, 0))
 _store9.close()
+
+# ---------------------------------------------------------------------------
+# Pass-9 records (cycle 9): U77 credential hygiene, U79 classifier edges.
+
+print("== F77: credential scrub end to end ==")
+_TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"  # synthetic (KTD39)
+_t9 = Path(tempfile.mkdtemp(prefix="pass9-f77-"))
+_store77 = EvidenceStore(_t9 / "ev.sqlite")
+_store77.record_tool_call(
+    tool_name="skill_manage",
+    args={"auth": f"Bearer {_TOKEN}"},
+    result=f"TOKEN={_TOKEN} applied",
+    task_id="backfill:s1:c1",
+    session_id="s1",
+)
+with _store77._read_connection() as _c:
+    _row = _c.execute("SELECT args_json, result_preview FROM tool_events").fetchone()
+rec("f77a ingest scrubs args and preview before the write",
+    ("ghp_" not in _row["args_json"], "ghp_" not in _row["result_preview"], "[REDACTED:github-token]" in _row["result_preview"]),
+    (True, True, True))
+_store77.close()
+
+_lines = "\n".join(auto_evolve._format_evidence_rows([
+    {"created_at": "2026-09-22T00:00:00Z", "tool_name": "skill_manage", "is_error": 0,
+     "result_preview": f"TOKEN={_TOKEN} verbatim"},
+]))
+rec("f77b embed points scrub pre-fix rows from old stores",
+    ("ghp_" not in _lines, "[REDACTED:github-token]" in _lines), (True, True))
+
+print("== F79: classifier residual edges ==")
+rec("f79a sibling code outranks zero exit_code",
+    looks_like_error({"exit_code": 0, "code": 500}), True)
+rec("f79b snake_case exit_code prose is failure, success claim still answers",
+    (looks_like_error("exit_code=1"), looks_like_error("exit_code: 1"), looks_like_error("exit_code=1, no errors")),
+    (True, True, False))
+
+# P3-abort regression probe (cycle-8 review): a NaN status used to raise
+# ValueError in _status_signal and abort the whole legacy import.
+_t9b = Path(tempfile.mkdtemp(prefix="pass9-nan-"))
+_legacy9 = _t9b / "legacy"
+_legacy9.mkdir()
+(_legacy9 / "session_nan.json").write_text(
+    json.dumps({
+        "session_id": "nan-session",
+        "started_at": datetime.now(UTC).isoformat(),
+        "last_active": datetime.now(UTC).isoformat(),
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "web_search", "arguments": "{\"q\": \"x\"}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"status": NaN, "summary": "done"}'},
+        ],
+    }),
+    encoding="utf-8",
+)
+_store79 = EvidenceStore(_t9b / "ev.sqlite")
+_r79 = backfill_sessions(sessions_dir=_legacy9, store=_store79, days=365)
+rec("f79c NaN status record imports without aborting the backfill",
+    (_r79["sessions_imported"], _r79["sessions_failed"], _r79["files_failed"]), (1, 0, 0))
+_store79.close()
 
 print()
 fails = 0

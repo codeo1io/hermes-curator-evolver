@@ -1273,3 +1273,273 @@ fixtures, exception-hierarchy audit, injection-proven containment, zero-lint
 stash A/B, interruption-remainder recovery). Cycle-9 candidates are listed at
 the end of that document (U75, U56, U69+KTD26, positional-rule adversarial
 re-review, U62 re-verify, U70, hermes-dojo competitor watch).
+
+## Extension 2026-09-22 - maintenance cycle 9
+
+Provenance: conductor run `d3a249d732a64103a5dadb4b9e28ab21`
+(repository-maintenance `3d537fab4caf49a8be980f3d2170ee37:cycle:5`; the
+campaign cycle counter continues — this run is campaign cycle 5, while the
+roadmap's internal "maintenance cycle" sequence continues: this is cycle 9,
+pass 9 of the adversarial assessment series). Base-freshness anomaly, first
+of its kind: this run's worktree was cut from `a76962c` (retired branch
+`fix/maintenance-cycles-1-5`, upstream gone), which is 8 commits BEHIND
+`origin/main` `709fbeb` — cycles 7-8 and CI PRs #3/#7 are absent from the
+worktree base. Assessment and research were therefore executed against
+current main in a scratch checkout; this extension is appended to main's
+roadmap state (pre-image sha256 `6f84224c80fe5a18e8377d9ed572e5463a1bf4
+03dc944df0ad0211ecba5d3b8`, 1275 lines) and the run worktree's roadmap file
+was synced to main-then-append, so the net-new content versus origin/main
+is exactly this appendix. Integration must re-cut onto main before any
+commit leaves this run. The repository is now PUBLIC (`gh` visibility:
+public; CI moved to GitHub-hosted runners by PR #7, merged 2026-09-22);
+gates re-verified on main this pass: pytest 377 passed, corpus
+`scripts/repro-pass7.py` 43/43 / 0 deviations, ruff PATH 0.15.10 16 errors
+whole-tree flat (0.16.7: 63 package+tests / 16 scripts — version skew is
+now unmanaged; see U80).
+
+### Assessment pass 9 - headline context
+
+Two findings reset the cycle's priority floor. First, a PAT-shaped string
+(`ghp_16C7…B4a`) sits committed verbatim in
+`docs/ideation/2026-09-02-cycle-2-extension-research.md:60` (introduced by
+`ac9c0ee`), in a repository that is now public; GitHub secret scanning is
+enabled with push protection yet raised ZERO alerts for it (alerts list
+empty, 2026-09-22) — there is no external backstop for this credential
+class. Second, the secret-leak chain that same doc proved experimentally in
+cycle 2 is STILL OPEN end-to-end on main: no scrubbing exists anywhere
+(`storage.py:194/:560` stores raw previews; `auto_evolve.py:422/:568/:830`
+embeds them verbatim into SKILL.md managed blocks and spill files;
+`skill_validate.py:44-77` is structural-only). Remaining pass-9 findings:
+backfill dedupe readers run on the warm WRITER connection
+(`backfill.py:115/:136/:156`, violating the U53 contract at
+`storage.py:307-323`); the legacy import branch lacks the per-session crash
+boundary (`backfill.py:560` bare call vs the guarded `:524`); classifier
+residual edges verified live on main (`{"exit_code":0,"code":500}` →
+success; `exit_code=1` / `exit_code: 1` prose uncaught); no lint gate in CI
+and no `[tool.ruff]` config; dedupe is check-then-insert with no UNIQUE
+constraint; stale self-hosted-runner comment in `ci.yaml:33-41`.
+
+### New work packets - cycle-9 extensions
+
+- **U77 - credential hygiene across the evidence pipeline (critical).**
+  Scope: scrub at ingest (`storage.py` record paths — `_compact` callers),
+  scrub at embed (`auto_evolve.py` evidence formatting + spill files), and
+  detect in `skill_validate.py` (vendored pattern set derived from
+  gitleaks/detect-secrets: `ghp_`/`github_pat_`/`gho_`/`ghs_`/`AKIA`/`sk-`
+  /`xox[baprs]`/`TOKEN=`-style assignments; no new runtime deps). AC:
+  (a) a recorded tool result containing a PAT-shaped string yields a
+  SKILL.md managed block AND spill file with the credential replaced by a
+  deterministic redaction marker — pinned by fault-injection test replaying
+  the cycle-2 experiment with synthetic tokens; (b) `skill_validate`
+  returns a named error for credential-bearing SKILL.md; (c) scrub counts
+  disclosed in run JSON + stats per the KTD36 visible-drop pattern; (d)
+  377 baseline tests + corpus 43/43 stay green; (e) zero new ruff counts.
+  Evidence expectation: new unit tests + corpus records (f77 class) + a
+  batch-doc table of pattern → redaction marker.
+- **U78 - backfill reader-connection and containment batch.** Scope:
+  migrate the three dedupe readers (`backfill.py:115/:136/:156`) to
+  `_read_connection()`; give the legacy branch (`:551-569`) the per-session
+  boundary the state-db branch has (`:515-531`) plus a guarded `stat()`;
+  decide dedupe uniqueness (UNIQUE index on (session_id, task_id,
+  tool_name) vs check-then-insert — migration disclosed and idempotent).
+  AC: (a) a connection-identity test asserts backfill SELECTs never hold
+  `connect()`'s writer handle; (b) poison-session fault injection on the
+  legacy path → counted skip, import completes (U76 pattern); (c) re-run
+  idempotence stable; (d) gates green. U70 (early-termination) may ride
+  this batch's files but lands as its own commit, never silently bundled.
+- **U79 - classifier residual edges (post-U73 shapes).** Scope:
+  `{"code": NNN}` examined as a failure signal even under `exit_code: 0`
+  (explicit-failure precedence per KTD35); exit-code keyword pattern
+  separator set widened to `[\s_:=]+` (`candidates.py:99`, loop
+  `:360-366`, early return `:386`). AC: mirror-pair matrix cases +
+  corpus records; the L15 FORMAT-MATRIX gains the mixed-signal axis
+  (`exit_code: 0` + `code >= 400`) so the next pass cannot narrow-test to
+  green; gates green.
+- **U80 - lint gate and toolchain pinning.** Scope: `[tool.ruff]` in
+  pyproject freezing today's effective rule set; CI lint job at a pinned
+  ruff version with counts asserted ≤ the recorded baseline (0.16.7: 63
+  package+tests / 16 scripts; 0.15.10: 16 whole-tree). AC: config lands
+  with a documented rule-selection rationale (freeze, not churn); the
+  baseline table is recorded in the batch doc; CI fails on new lint;
+  existing counts unchanged (proven by stash A/B).
+- **U81 - public-surface hygiene pack.** Scope: SECURITY.md with a
+  reporting path; README support-channel pointer (issues are currently
+  DISABLED on codeo1io — zero user channel); README trust-boundary honesty
+  edit (until U77 lands, the auto-run path does NOT scrub evidence
+  previews — replace the "already-redacted" implication on that path);
+  fix the stale self-hosted-runner comment `ci.yaml:33-41`; record the
+  maintainer-side actions outside repo scope (enable secret-scanning
+  non-provider patterns; decide dependabot) as disclosures. AC: docs-only
+  diff, zero lint impact, all cited paths exist (commit-gate rule).
+- **U82 - skill_validate alignment with the Agent Skills standard.**
+  Research: `anthropics/skills` (177.6k stars, `spec/` + `template/`;
+  agentskills.io live) and the active third-party validator
+  `agent-ecosystem/skill-validator` (248 stars, pushed 2026-09-20: spec
+  conformance + content density/quality checks). Scope: vendor a minimal
+  spec-conformance rule set (frontmatter schema incl. `metadata.version`
+  placement per the standard, marker balance, size caps per the
+  single-sourced constants at `auto_evolve.py:53/55`). AC: validate output
+  gains a spec-version field; fixture corpus of valid/invalid SKILL.md
+  from the standard's template pinned; zero new runtime deps.
+- **U83 - dependency-aware skill impact analysis.** Trigger: the upstream
+  community's ONLY open issue (`pingchesu/hermes-curator-evolver`#12,
+  2026-05-09): "Add dependency-aware skill impact analysis". Scope:
+  read-only cross-skill dependency graph (name references in
+  prose/scripts, shared `references/` files, consolidation candidates),
+  surfaced as an impact preview in propose/merge-check (extends the
+  existing consolidation guardrail). AC: impact report names
+  dependents-of-a-changed-skill; merge-check consumes it; read-only;
+  fixtures pinned. Feature packet — sequenced behind the defect batch.
+- **U84 - multi-agent session import (Claude Code / Copilot).** Research:
+  `NousResearch/hermes-agent-self-evolution` (5,388 stars) shipped exactly
+  these importers (#2/#4, 2026-03-29) then went dormant (last commit
+  2026-06-17); the curator's backfill importer architecture is the natural
+  home. Design-first packet: AC-zero is a format-stability survey plus
+  parser boundary tests; adapters must reuse the U74 identity scheme and
+  the per-session boundary (U78).
+
+### Evidence corrections to standing packets (from cycle-9 research)
+
+- **U62 (ecosystem duplicate check)** - KTD28 re-verify #2: PR #101237
+  still OPEN 2026-09-22; index LIVE and same-day fresh for the SECOND
+  consecutive verified day (`generated_at` 2026-09-22T07:53:16Z,
+  `skill_count` 100,496, +2,170 in 2 days; 2026-09-21 was 98,326 @
+  07:47:22Z). Technical gate half-met as before; see KTD40.
+- **U70 (backfill early termination)** - re-confirmed on the host release
+  fork (`b4528e6c98`): MRU-first SQL ordering present
+  (`hermes_state_sessions.py:1112` in the fork checkout; cycle-8's
+  `:1365/:1384` cite was the v0.21.3 checkout — same guarantee). No
+  upstream wait; ships against the installed host.
+- **U69 (host attribution)** - hook surface re-confirmed on the release
+  fork (`hermes_cli/plugins.py` `on_skill_lifecycle`;
+  `tools/skill_usage.py` durable per-skill facts). U74's dependency
+  landed in cycle 8; U69 next needs its KTD26 re-read of U38/U47/U60 and
+  inherits the disclosed-counter pattern.
+- **Competitor watch (data refresh only; the cycle-8 deep-read debt on
+  hermes-dojo/EvoSkills still stands — no positioning claim may be made
+  until it is paid).** dojo 174★ stale since 2026-06-06; EvoSkill
+  1,214★ active 2026-09-21 (benchmark-driven; its "evolution without a
+  benchmark" directions remain open); SkillClaw 2,634★ (collective,
+  2026-08-17); EvoSkills 436★ (2026-09-17); muse_autoskill 38★
+  (2026-09-13); tiny same-design-center entrants (smfworks/
+  hermes-skill-forge 2★ visual steering; lennney and luxuguang-leo
+  hermes-skill-evolution 0-1★) — demand signal only. The
+  usage-evidence-driven niche remains unoccupied by any leader.
+
+### Rejected directions (research cycle 9)
+
+- **GitHub secret scanning as the credential backstop** — REJECTED as a
+  substitute for U77: scanning is enabled with push protection on the
+  public repo yet raised zero alerts for the committed PAT-shaped string
+  (alerts `[]`, 2026-09-22); validity checks are disabled repo-side.
+  Scrub at source instead.
+- **History-rewrite scrub of the committed token** — REJECTED this cycle:
+  the roadmap and campaign docs cite that file; the real remedy if the
+  token was live is rotation (maintainer-side, outside repo scope). The
+  batch adds a synthetic-or-revoked provenance annotation instead (KTD39).
+- No standing cycle-1..8 rejections are overturned by cycle-9 evidence.
+
+### Decisions
+
+KTD39. The committed token string is treated as presumptively synthetic
+but unproven: GitHub scanning raised no alert on the public repository.
+The cycle-9 batch annotates `docs/ideation/2026-09-02-cycle-2-extension-
+research.md` with a provenance note (synthetic-or-revoked attestation and
+the alert evidence); rotation remains the maintainers' only real remedy
+and is disclosed in the ship PR, not gated on.
+KTD40. U62 single-gating amendment PROPOSED: gate on 30 consecutive days
+of recorded `HERMES_INDEX_URL` liveness with same-day `generated_at`
+(ledger so far: 2026-09-21, 2026-09-22) instead of ALSO requiring PR
+#101237 to merge. Adoption requires a stewardship-cycle confirmation that
+records the ledger start; until adopted, the double-gate stands.
+KTD41. Numbering authority under divergence (extends KTD38): units and
+decisions continue the MAIN chain (this cycle: U77+, KTD39+) regardless
+of numbers allocated on unmerged campaign worktrees. Concrete hazard on
+record: run `3ed5d14a80a2` (campaign cycle 3) appended to the stale
+668-line roadmap and allocated up to U82, overlapping main's U63-U76 and
+this cycle's U77-U84 with different packets. Those allocations are void
+for numbering; any surviving content from that branch must be renumbered
+into main's sequence at integration.
+
+### Sequencing
+
+U77 first — critical severity, no external backstop, compounds pass-9
+findings 1-2. U78 second — P2-class pipeline defects with the fault
+injection already specified. U79 + U80 + U81 ride the same batch
+(mechanical + config + docs-only; U80 bounds the ruff churn that held U56
+for three cycles). Then the standing carried order resumes: U75 (lockfile,
+pull-in criteria as recorded in the cycle-8 batch doc) → U56 (carrying
+F6/F7/N7/ST-6.x; now lint-bounded by U80) → U69 (KTD26 re-read;
+disclosed-counter inheritance). Feature packets follow the defect batch:
+U82 → U83 → U84. U70 ships with or immediately after U78's batch as its
+own commit. U62 waits on KTD40's ledger. Pass-9 carried defects with
+homes: stale ci.yaml comment + README honesty edit → U81; dedupe
+uniqueness → U78; classifier edges → U79.
+
+## Cycle 9 status 2026-09-22 (pre-review fold)
+
+Status of the cycle-9 extension above, folded from pre-review evidence only
+(assessment, research, roadmap, prioritization, stewardship, implementation,
+targeted/full test outcomes). Review and shipping outcomes are recorded by the
+NEXT cycle's assessment, not here.
+
+Implemented this cycle (pre-review; code in the run worktree after the
+prioritize-mandated re-cut onto main@709fbeb, uncommitted at fold time):
+
+- **U77 credential hygiene — implemented.** New `hermes_curator_evolver/hygiene.py`
+  (GitHub `ghp_`/`github_pat_`, OpenAI/Anthropic `sk-` families, AWS `AKIA`,
+  Slack `xox*`, generic `token=`/`password=` assignments; idempotent markers;
+  thread-safe counters) wired at ingest (`storage._compact` and
+  `storage._json_dumps`, before the length cut), at all three embed points
+  (`_format_evidence_rows`, `_format_evidence_reference`,
+  `_build_semantic_query` — defense in depth against pre-fix rows in older
+  stores), and at validation (credential-shaped SKILL.md content is a named
+  `skill_validate` error, so guarded apply rolls back). Disclosed via
+  `credentials_scrubbed` in backfill summaries, `auto-run --format json`
+  (`summary.credentials_scrubbed`), and the human CLI output. The committed
+  synthetic token doc carries the KTD39 annotation.
+- **U78 backfill readers + containment — implemented.** The three backfill
+  existence checks migrated onto `storage`'s read-only `_read_connection()`
+  contract (U53), pinned by a reader test that monkeypatches the writer
+  `connect()` to explode; the legacy branch gained the per-session crash
+  boundary; `_iter_session_files`' sort key and the legacy session-time stat
+  go through a guarded `_mtime` helper (TOCTOU: vanished files sort last);
+  the dedupe race is closed by a PARTIAL unique index
+  `ux_tool_events_backfill_identity` scoped to `task_id LIKE 'backfill:%'`
+  (live-path empty-task_id repeats stay legal, u51/u68 semantics preserved;
+  race losers disclosed via `tool_events_skipped_duplicate`; legacy duplicate
+  databases keep their data with a disclosed warning — no destructive
+  migration).
+- **U79 classifier residual edges — implemented** (pulled in from deferrable:
+  room in the batch). Sibling exit-status keys are re-examined under a zero
+  primary exit (`exit_code 0` + `code 500` now failure; in-band
+  `code 200/201/226` keeps success); the exit-status separator set widened
+  from whitespace-only to the `[-\s_:=]` class (`exit_code=1`, `exit_code: 1`,
+  `exit-code 2` now failure; strictly widening, KTD35 success-claim rule
+  preserved); the cycle-8-review P3 NaN/Infinity twins guarded in both
+  `_status_signal` and the key-pick loop.
+- **U80 lint gate + ruff pin — implemented.** `pyproject` freezes
+  `[tool.ruff]` (E4/E7/E9/F, py311); `ci.yaml` gains a lint job with ruff
+  pinned `0.16.7` and a count CEILING of 79 (63 pkg+tests + 16 scripts, the
+  recorded baselines; unverifiable on run hosts where only 0.15.10 exists —
+  policy is bump-and-record, never weaken the freeze).
+- **U81 public-surface hygiene — implemented.** `SECURITY.md` (advisory-based
+  reporting path given issues are disabled; U77 defense-in-depth description
+  with honest pattern-based limitations); README honesty edits (the two false
+  already-redacted claims removed, trust boundary restated truthfully); stale
+  ci.yaml self-hosted-runner comment corrected as a separate hunk.
+
+Validation outcomes (pre-review): pytest **410** passed (377 + 33 new in
+`tests/test_cycle9_hygiene_readers_classifier.py`); corpus
+`scripts/repro-pass7.py` **48/48** (5 new pass-9 records f77a/f77b/f79a/f79b/
+f79c); ruff full tree **16 flat** on PATH 0.15.10 (zero new findings; the
+only arm on run hosts). Alternates U75/U70 were NOT pulled in; the batch
+landed inside its envelope. Baselines for the next cycle: 410 / 48 / 16.
+
+Decisions standing: KTD39 (annotated-not-erased synthetic token; rotation is
+maintainer-side), KTD40 (U62 single-gating PROPOSED; ledger at 2/30 days —
+2026-09-21, 2026-09-22), KTD41 (numbering authority = main chain; the
+`3ed5d14a80a2` worktree's U-numbers remain void at integration).
+
+Durable lessons folded to `docs/learnings/2026-09-22-cycle-9-compounding.md`
+(L29–L34); the next cycle's assessment carries review and shipping outcomes.

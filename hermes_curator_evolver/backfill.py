@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .paths import hermes_home
+from .hygiene import stats_snapshot as _scrub_stats
 from .storage import EvidenceStore, _compact
 
 
@@ -112,15 +113,19 @@ def _tool_results_by_call_id(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _tool_event_exists(store: EvidenceStore, *, session_id: str, task_id: str, tool_name: str) -> bool:
-    with store.connect() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM tool_events
-            WHERE session_id = ? AND task_id = ? AND tool_name = ?
-            LIMIT 1
-            """,
-            (session_id, task_id, tool_name),
-        ).fetchone()
+    # Reader connection (roadmap U53/U78): backfill SELECTs must never
+    # touch the warm writer handle — a ``with store.connect()`` here
+    # could COMMIT/ROLL BACK a concurrent writer's open transaction.
+    # Same ``_read_connection()`` the storage layer's own readers use.
+    conn = store._read_connection()
+    row = conn.execute(
+        """
+        SELECT 1 FROM tool_events
+        WHERE session_id = ? AND task_id = ? AND tool_name = ?
+        LIMIT 1
+        """,
+        (session_id, task_id, tool_name),
+    ).fetchone()
     return row is not None
 
 
@@ -133,36 +138,52 @@ def _turn_event_exists(
     user_message: str,
     assistant_response: str,
 ) -> bool:
-    with store.connect() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM turn_events
-            WHERE session_id = ? AND model = ? AND platform = ?
-              AND user_preview = ? AND assistant_preview = ?
-            LIMIT 1
-            """,
-            (
-                session_id,
-                model,
-                platform,
-                _compact(user_message, store.preview_chars),
-                _compact(assistant_response, store.preview_chars),
-            ),
-        ).fetchone()
+    # Reader connection (U53/U78) — see _tool_event_exists.
+    conn = store._read_connection()
+    row = conn.execute(
+        """
+        SELECT 1 FROM turn_events
+        WHERE session_id = ? AND model = ? AND platform = ?
+          AND user_preview = ? AND assistant_preview = ?
+        LIMIT 1
+        """,
+        (
+            session_id,
+            model,
+            platform,
+            _compact(user_message, store.preview_chars),
+            _compact(assistant_response, store.preview_chars),
+        ),
+    ).fetchone()
     return row is not None
 
 
 def _session_event_exists(store: EvidenceStore, *, session_id: str) -> bool:
-    with store.connect() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM session_events WHERE session_id = ? LIMIT 1",
-            (session_id,),
-        ).fetchone()
+    # Reader connection (U53/U78) — see _tool_event_exists.
+    conn = store._read_connection()
+    row = conn.execute(
+        "SELECT 1 FROM session_events WHERE session_id = ? LIMIT 1",
+        (session_id,),
+    ).fetchone()
     return row is not None
 
 
+def _mtime(path: Path) -> float:
+    """mtime for ordering; 0.0 when the file vanished mid-scan (U78).
+
+    The legacy directory is scanned unsorted by the OS and files can
+    disappear between ``glob`` and ``stat`` (TOCTOU): a vanished file
+    sorts last instead of aborting the import with ``FileNotFoundError``.
+    """
+
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _iter_session_files(sessions_dir: Path, limit: int | None) -> list[Path]:
-    files = sorted(sessions_dir.glob("session_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(sessions_dir.glob("session_*.json"), key=_mtime, reverse=True)
     if limit is not None and limit > 0:
         return files[:limit]
     return files
@@ -375,7 +396,7 @@ def _import_session_data(
                 # lossy ingest stays visible instead of silent.
                 result["tool_events_skipped_duplicate"] += 1
                 continue
-            evidence.record_tool_call(
+            inserted = evidence.record_tool_call(
                 tool_name=tool_name,
                 args=args,
                 result=tool_results.get(call_id, ""),
@@ -383,6 +404,12 @@ def _import_session_data(
                 session_id=session_id,
                 created_at=_iso(_parse_dt(message.get("timestamp")) or session_dt),
             )
+            if not inserted:
+                # Lost dedupe race (roadmap U78): the pre-check passed but
+                # the unique identity index arbitrated the INSERT — same
+                # truth as the skip above, disclosed the same way.
+                result["tool_events_skipped_duplicate"] += 1
+                continue
             result["tool_events_imported"] += 1
 
     pending_user: str | None = None
@@ -463,6 +490,10 @@ def backfill_sessions(
         raise ValueError("sessions_dir and state_db are mutually exclusive")
 
     evidence = store or EvidenceStore()
+    # Credential-scrub disclosure (roadmap U77, KTD36): the counter is the
+    # process-wide scrub total's delta over THIS import, so the summary
+    # states how many credential-shaped strings the pipeline redacted.
+    scrub_before = _scrub_stats()["scrubbed"]
     bounded_days = max(int(days or 1), 1)
     cutoff = datetime.now(timezone.utc) - timedelta(days=bounded_days)
     legacy_dir = Path(sessions_dir).expanduser() if sessions_dir is not None else default_sessions_dir()
@@ -490,6 +521,7 @@ def backfill_sessions(
         "legacy_skipped_undecodable": 0,
         "tool_events_imported": 0,
         "tool_events_skipped_duplicate": 0,
+        "credentials_scrubbed": 0,
         "turn_events_imported": 0,
         "session_events_imported": 0,
     }
@@ -537,6 +569,7 @@ def backfill_sessions(
                     result["last_session_error"] = f"{type(exc).__name__}: {exc}"
         finally:
             session_db.close()
+        result["credentials_scrubbed"] = _scrub_stats()["scrubbed"] - scrub_before
         return result
 
     for path in _iter_session_files(legacy_dir, limit):
@@ -553,17 +586,28 @@ def backfill_sessions(
             result["files_failed"] += 1
             continue
 
-        session_dt = _session_time(data, datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
+        session_dt = _session_time(data, datetime.fromtimestamp(_mtime(path), timezone.utc))
         if session_dt < cutoff:
             result["sessions_skipped_old"] += 1
             continue
-        _import_session_data(
-            data,
-            evidence=evidence,
-            result=result,
-            session_dt=session_dt,
-            fallback_session_id=path.stem.replace("session_", ""),
-            current_state_session=False,
-        )
+        try:
+            _import_session_data(
+                data,
+                evidence=evidence,
+                result=result,
+                session_dt=session_dt,
+                fallback_session_id=path.stem.replace("session_", ""),
+                current_state_session=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - per-session boundary
+            # (roadmap U4/U78): the legacy branch now carries the same
+            # per-session crash boundary the state-db branch has had since
+            # U4 — breadth is deliberate so one corrupt or half-written
+            # legacy session becomes a counted skip, never a wholesale abort
+            # of the import (pass-8 P5: a NaN status record used to abort
+            # every remaining file); the summary surfaces the last reason.
+            result["sessions_failed"] += 1
+            result["last_session_error"] = f"{path.name}: {type(exc).__name__}: {exc}"
 
+    result["credentials_scrubbed"] = _scrub_stats()["scrubbed"] - scrub_before
     return result
