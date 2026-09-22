@@ -35,7 +35,7 @@
 Two new reviewer-first paths are now visible up front:
 
 - **`auto-run --variants N`** generates up to four deterministic, model-free bounded update variants, scores them with local safety/quality signals, and selects one winner. The default remains `--variants 1`, so existing dry runs stay stable.
-- **`candidates-mine` + `candidates-list`** turns already-redacted session evidence into a local SQLite review queue. It classifies findings as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` so a human can decide what should become durable memory, a skill patch, a new skill, or an evaluation case. It does not write Hermes memory, edit skills, or enable auto-apply.
+- **`candidates-mine` + `candidates-list`** turns session evidence into a local SQLite review queue. It classifies findings as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` so a human can decide what should become durable memory, a skill patch, a new skill, or an evaluation case. It does not write Hermes memory, edit skills, or enable auto-apply. Credential-shaped strings in tool results are scrubbed at ingest (see [Trust boundary](#trust-boundary)).
 
 ```bash
 # Compare bounded variants without writing files
@@ -148,12 +148,13 @@ The default experience is designed to be inspectable before it is writable:
 - **Channel auto-load guard:** skills referenced by Hermes `channel_skill_bindings` are treated as high-blast-radius prompts. Autorun protects them from unattended writes by default and enforces a 12k budget even when explicitly allowlisted, so Slack-bound router skills do not grow into context-exhausting umbrellas.
 - **Source provenance gate:** official/bundled, hub-installed, plugin-provided, `skills.external_dirs`, pinned, and unknown-source skills are skipped from unattended writes.
 - **Rollback is concrete:** guarded apply records backups and manifests so you can restore exact prior content.
+- **Credential scrubbing (U77):** tool-result previews and serialized arguments are scrubbed of credential-shaped strings (GitHub/Anthropic/OpenAI/AWS/Slack tokens, generic `token=`/`password=` assignments) before storage, again at every embed point before publication, and on final validation — a skill whose content still carries a credential-shaped string fails validation and is never auto-applied. Scrub counts are disclosed in `auto-run --format json`, backfill summaries, and the human CLI output.
 
 For a quick visual walkthrough, see [docs/demo-script.md](docs/demo-script.md). For synthetic output examples, see [examples/](examples/).
 
 ### Read-only session + skill candidate review queue
 
-`candidates-mine` turns already-redacted evidence packets into a local SQLite review queue. It classifies each record as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore`, but it never writes to Hermes memory, never edits skills, and never enables auto-apply. Every row is pending human review by default.
+`candidates-mine` turns evidence packets into a local SQLite review queue. It classifies each record as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore`, but it never writes to Hermes memory, never edits skills, and never enables auto-apply. Every row is pending human review by default. Incoming evidence is scrubbed of credential-shaped strings at ingest (U77); do not paste live secrets into any input.
 
 ```bash
 cat > /tmp/redacted-evidence.jsonl <<'EOF'
@@ -452,6 +453,14 @@ Override:
 ```bash
 export HERMES_CURATOR_EVOLVER_DB=/custom/path.sqlite
 ```
+
+## Support
+
+Issues and discussions are both disabled on this repository. To report a
+security vulnerability, follow [SECURITY.md](SECURITY.md) — GitHub security
+advisories are the preferred channel; never post vulnerability details
+publicly. For anything else, contact the maintainers through the
+[codeo1io](https://github.com/codeo1io) GitHub organization.
 
 ## Roadmap status
 

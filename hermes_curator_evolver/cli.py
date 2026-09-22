@@ -921,6 +921,14 @@ def handle_cli(args: argparse.Namespace) -> None:
                     print(f"Last session error: {result['last_session_error']}")
             print(f"Failed files: {result['files_failed']}")
             print(f"Tool events imported: {result['tool_events_imported']}")
+            # Cycle-8 review P3 (fixed cycle 9, U78): the human summary
+            # must carry the same truthful counters the JSON does.
+            if result.get("tool_events_skipped_duplicate"):
+                print(f"Duplicate tool events skipped: {result['tool_events_skipped_duplicate']}")
+            if result.get("legacy_skipped_undecodable"):
+                print(f"Undecodable legacy files skipped: {result['legacy_skipped_undecodable']}")
+            if result.get("credentials_scrubbed"):
+                print(f"Credential-shaped strings scrubbed: {result['credentials_scrubbed']}")
             print(f"Turn events imported: {result['turn_events_imported']}")
             print(f"Session events imported: {result['session_events_imported']}")
             if result.get("missing"):

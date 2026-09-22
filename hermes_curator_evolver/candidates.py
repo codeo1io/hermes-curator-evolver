@@ -95,8 +95,16 @@ _ZH_WORKFLOW_PATTERN = re.compile(
 )
 
 _FAILURE_KEYWORD_PATTERN = re.compile(
-    r"\b(traceback|not[_\s-]?found|exit\s+(?:code|status)\s+[1-9]\d*"
-    r"|exit(?:ed|ing)?(?:\s+with)?\s+(?:code|status)\s+[1-9]\d*|exit\s*=\s*[1-9]\d*"
+    # Separator set ``[-\s_:=]`` (roadmap U79, cycle 9): models emit
+    # ``exit_code=1``, ``exit_code: 1``, ``exit-code 1`` — snake_case,
+    # hyphen, and punctuation joins the old ``\s+``-only arms could not
+    # see, so a failure-shaped report with NO other keyword classified
+    # as success (pass-9: "exit_code=1" alone). The set strictly widens
+    # the old arms (``\s+`` → ``[-\s_:=]+``), so every previously-
+    # matching shape still matches; zero stays excluded by ``[1-9]\d*``.
+    r"\b(traceback|not[_\s-]?found|exit[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
+    r"|exit(?:ed|ing)?(?:[-\s_:=]+with)?[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
+    r"|exit[\s_]*=[\s_]*[1-9]\d*"
     r"|nonzero|failed|size\s+cap|exceeded)\b",
     re.IGNORECASE,
 )
@@ -188,7 +196,19 @@ def _status_signal(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        code = int(value)
+        # NaN/Infinity carry no status truth (cycle-8 review P3, fixed
+        # cycle 9): ``int(float("nan"))`` raises, which used to crash the
+        # classifier and abort a whole backfill. Unrepresentable numbers
+        # are no signal, not a crash — that includes ints beyond float
+        # range (``float(10**400)`` raises OverflowError; cycle-9 review
+        # F3: the pre-fix ``int(value)`` never crashed on ints).
+        try:
+            number = float(value)
+        except OverflowError:
+            return None
+        if number != number or number in (float("inf"), float("-inf")):
+            return None
+        code = int(number)
         return (
             "success"
             if _IN_BAND_SUCCESS_MIN <= code < _IN_BAND_SUCCESS_MAX
@@ -355,14 +375,26 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
         # generic ``code`` in-band test is the RANGE 200-399 (pass-8 F3:
         # the enumerated set missed 226), and ``status`` carries numeric
         # and status-line signals under the same range (pass-8 F4).
-        exit_code: int | None = None
-        exit_code_key: str | None = None
+        # Key-pick precedence (U43/U51) with a NaN/Infinity guard (cycle-8
+        # review P3, fixed cycle 9 — twin of the ``_status_signal`` guard):
+        # ``exit_code`` outranks ``returncode`` outranks ``code``, and an
+        # unrepresentable float is ignored rather than crashing the
+        # classifier. Sibling keys the pick skipped are re-examined below
+        # under a zero primary exit (U79).
+        exit_values: dict[str, int] = {}
         for key in _EXIT_CODE_KEYS:
             value = payload.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                exit_code = int(value)
-                exit_code_key = key
-                break
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            try:
+                number = float(value)
+            except OverflowError:
+                continue  # ints beyond float range: no representable exit
+            if number != number or number in (float("inf"), float("-inf")):
+                continue
+            exit_values[key] = int(number)
+        exit_code_key = next(iter(exit_values), None)
+        exit_code = exit_values.get(exit_code_key) if exit_code_key else None
         status_signal = _status_signal(payload.get("status"))
         explicit_failure = bool(
             payload.get("error")
@@ -384,6 +416,23 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
         if status_signal == "failure":
             return True
         if exit_code == 0:
+            # Sibling exit-status keys under a zero primary exit (roadmap
+            # U79, cycle 9, KTD35 explicit-failure precedence): the key
+            # pick stops at the FIRST present key, so {"exit_code": 0,
+            # "code": 500} used to return success without ever reading
+            # ``code``. A sibling reporting failure now outranks the zero
+            # exit; a sibling whose value is itself an in-band HTTP
+            # success ({"exit_code": 0, "code": 200}) keeps the success.
+            for key, value in exit_values.items():
+                if key == exit_code_key or value == 0:
+                    continue
+                if (
+                    key == "code"
+                    and _IN_BAND_SUCCESS_MIN <= value < _IN_BAND_SUCCESS_MAX
+                    and not explicit_failure
+                ):
+                    continue
+                return True
             return False
         if payload.get("ok") is True or payload.get("success") is True:
             return False

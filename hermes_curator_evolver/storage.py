@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import looks_like_error
+from .hygiene import scrub_text
 from .paths import default_db_path
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,10 @@ def _compact(value: Any, limit: int) -> str:
         except TypeError:
             text = repr(value)
     text = _strip_nul_bytes(text)
+    # Credential scrub (roadmap U77) runs BEFORE the length cut: a
+    # credential straddling the truncation boundary would otherwise leak
+    # its head into the stored preview.
+    text, _ = scrub_text(text)
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)] + "…"
@@ -213,6 +218,9 @@ def _json_dumps(value: Any, limit: int) -> str:
     except TypeError:
         text = json.dumps({"repr": repr(value)}, ensure_ascii=False, sort_keys=True)
     text = _strip_nul_bytes(text)
+    # Serialized tool arguments carry credentials too (Authorization
+    # headers, API keys in kwargs) — scrub with the same U77 choke point.
+    text, _ = scrub_text(text)
     if len(text) <= limit:
         return text
     return json.dumps({"preview": text[: max(limit - 1, 0)] + "…"}, ensure_ascii=False)
@@ -253,6 +261,11 @@ class EvidenceStore:
         self.preview_chars = preview_chars
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
+        # Identity-unique dedupe index (roadmap U78): created on every
+        # open (idempotent) so pre-index stores gain the TOCTOU backstop
+        # without a migration step; stores with legacy duplicate
+        # identities keep their data and disclose the gap instead.
+        self.dedupe_index_active = self._ensure_dedupe_index()
 
     def _apply_journal_mode(self, conn: sqlite3.Connection) -> None:
         """Enable WAL once per path, falling back to DELETE (recipe port).
@@ -526,6 +539,70 @@ class EvidenceStore:
         self.db_path.replace(backup)
         return True
 
+    def _ensure_dedupe_index(self) -> bool:
+        """Create the backfill-identity unique index (U78).
+
+        The pre-U78 dedupe guard was check-then-insert: two racing
+        importers could both pass the existence check and double-insert.
+        A PARTIAL UNIQUE index — scoped to ``task_id LIKE 'backfill:%'``
+        where identities are unique by construction — makes the database
+        the arbiter for exactly that race: the loser gets
+        ``IntegrityError`` from the INSERT and the caller discloses the
+        skip. Legacy databases that already hold duplicate backfill
+        identities (they predate the U74 session-unique fallback ids)
+        keep their data: index creation fails atomically, a disclosed
+        warning is logged, and check-then-insert remains the guard there.
+        """
+
+        conn = None
+        try:
+            with self._path_lock():
+                conn = self.connect()
+                # PARTIAL index (roadmap U78): the identity key is a
+                # dedupe key for the BACKFILL path only — its task ids
+                # are session-unique by construction (U74:
+                # ``backfill:{session}:{call_id}``). The live hook path
+                # legitimately repeats identities (task_id defaults to
+                # empty, so two calls to one tool in one session share a
+                # key and must both count), so a table-wide UNIQUE index
+                # would collapse bursts (caught by test_u51/u68). The
+                # partial predicate scopes the arbitration to exactly the
+                # race it exists for: two backfills importing the same
+                # file concurrently.
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_tool_events_backfill_identity
+                    ON tool_events (session_id, task_id, tool_name)
+                    WHERE task_id LIKE 'backfill:%'
+                    """
+                )
+                conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            groups: int = -1
+            if conn is not None:  # disclosure best effort
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) FROM (
+                            SELECT 1 FROM tool_events
+                            WHERE task_id LIKE 'backfill:%'
+                            GROUP BY session_id, task_id, tool_name
+                            HAVING COUNT(*) > 1
+                        )
+                        """
+                    ).fetchone()
+                    groups = int(row[0]) if row else -1
+                except sqlite3.Error:
+                    groups = -1
+            logger.warning(
+                "curator-evolver dedupe index not created: %s duplicate "
+                "identity group(s) exist (legacy data predating U74); "
+                "check-then-insert remains the dedupe guard on this store",
+                groups,
+            )
+            return False
+
     def record_tool_call(
         self,
         *,
@@ -536,14 +613,17 @@ class EvidenceStore:
         session_id: str = "",
         duration_ms: int | None = None,
         created_at: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Record one tool call; ``False`` = skipped as a duplicate (U78)."""
+
         skill_name = _extract_skill_name(tool_name, args)
 
-        def _insert() -> None:
+        def _insert() -> bool:
             with self.connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO tool_events (
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO tool_events (
                     created_at, session_id, task_id, tool_name, duration_ms,
                     is_error, skill_name, args_json, result_preview
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -559,9 +639,17 @@ class EvidenceStore:
                     _json_dumps(args, self.preview_chars * 2),
                     _compact(result, self.preview_chars),
                 ),
-            )
+                    )
+                except sqlite3.IntegrityError:
+                    # Lost dedupe race (roadmap U78): the partial identity
+                    # index made the INSERT the arbiter for backfill rows,
+                    # and this row's (session_id, task_id, tool_name)
+                    # already exists — same truth as the check-then-insert
+                    # skip, disclosed by the caller as a skipped duplicate.
+                    return False
+            return True
 
-        self._write_with_retry(_insert)
+        return self._write_with_retry(_insert)
 
     def record_turn(
         self,
