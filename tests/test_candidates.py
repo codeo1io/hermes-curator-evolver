@@ -777,3 +777,147 @@ _U73_STATUS_PAYLOAD_CASES = [
 @pytest.mark.parametrize("payload,expected", _U73_STATUS_PAYLOAD_CASES)
 def test_u73_status_payloads_int_lines_and_words(payload, expected):
     assert looks_like_error(payload) is expected
+
+
+# ---------------------------------------------------------------------------
+# U86 — free-text failure vocabulary widening (cycle 10, pass-7 F4 probes).
+# The exit-code arms and the ``failed``-only verb family could not see six
+# real-world failure phrasings: the ``ERROR:`` log prefix, bare ``exited 1``
+# (no code/status word), the ``failing`` participle, ``N errors`` counts,
+# ``timed out``, and ``permission denied``. Each widening is symmetric —
+# every success narrative that shares a token with the new arms stays a
+# success, answered positionally per KTD35 where applicable.
+# ---------------------------------------------------------------------------
+
+_U86_FAILURE_CASES = [
+    # pass-7 F4 probe set verbatim
+    ("ERROR: file not found", True),
+    ("exited 1", True),
+    ("3 tests failing", True),
+    ("2 errors", True),
+    ("timed out", True),
+    ("permission denied", True),
+    # widened shapes the probes imply
+    ("ERRORS: 4 found", True),
+    ("process exited 1", True),
+    ("exited 2", True),
+    ("4 validation errors", True),
+    ("1,000 errors", True),
+    ("10_000 checks failing", True),
+    ("timed_out waiting for lock", True),
+    ("Permission Denied", True),
+    ({"status": "timed_out"}, True),
+    ({"status": "permission_denied"}, True),
+]
+
+_U86_SUCCESS_CASES = [
+    # zero stays excluded by [1-9]\d* / count>0 at every widening
+    ("exited 0", False),
+    ("0 errors, 12 passed", False),
+    ("0 failing", False),
+    ("0 tests failed", False),
+    # colon-gated arm: no colon, no keyword hit
+    ("error rate healthy", False),
+    # no-…-failed family widened in step (success claims answer keywords)
+    ("no tests failing", False),
+    ("no parse errors", False),
+    # bare ``timeout`` stays a status word: config narratives are safe
+    ("using a 30s timeout", False),
+    # prior truth pins must survive the widening (KTD35 positional rule)
+    ("0 failed, exit code 1, no errors", False),
+    ("exit code 1, no errors", False),
+]
+
+
+@pytest.mark.parametrize("text,expected", _U86_FAILURE_CASES + _U86_SUCCESS_CASES)
+def test_u86_widened_failure_vocabulary(text, expected):
+    assert looks_like_error(text) is expected
+
+
+def test_u86_positional_rule_survives_widened_kinds():
+    # The keyword-after-success-claim rule holds for the NEW vocabulary
+    # exactly as it does for ``failed``: a failure claim after the last
+    # success phrase stands (docstring pin), and a success phrase in a
+    # DIFFERENT clause never erases a failing clause (S4).
+    assert looks_like_error("no tests failing, deploy timed out: lock held") is True
+    assert looks_like_error("no errors\nearlier permission denied on /tmp/x") is True
+    # A nonzero count is a standing failure claim even when a success
+    # phrase follows in the SAME clause (S1 semantics: "10 failed, 2
+    # passed" pins this for ``failed``; the widened kinds inherit it).
+    assert looks_like_error("2 errors, no errors since retry") is True
+
+
+# ---------------------------------------------------------------------------
+# Cycle-10 independent-review fixes (M1/M2/M3/L1): colon-form counts and
+# zero answers, the ``failures`` noun-plural family, timed-out count
+# binding, and the guarded overlong-count parse.
+# ---------------------------------------------------------------------------
+
+_REVIEW_FIX_FAILURE_CASES = [
+    # M2: the failures noun-plural family (roadmap U86 packet names
+    # "failing/failures plurals"; counts, colon forms, and the bare
+    # keyword with no count and no colon).
+    ("2 failures", True),
+    ("3 test failures", True),
+    ("failures: 2", True),
+    ("1,000 failures", True),
+    ("build failures detected", True),
+    # L1: nonzero timed-out counts (digit before AND after the colon).
+    ("12 timed out", True),
+    ("tests timed out: 3", True),
+    # M3: overlong counts are failure-shaped absurd text — nonzero,
+    # never a ValueError (the pre-fix int() raised past the py3.11+
+    # 4300-digit conversion limit, breaching the predicate contract
+    # reachable from storage.record_tool_call).
+    ("1" * 5000 + " failed", True),
+    ("1" * 5000 + " errors", True),
+    ("errors: " + "1" * 5000, True),
+    # Arm completion found during the fix: ``exited?`` regex-parses as
+    # ``exite|exited`` and missed the plain shell phrasing "exit 1".
+    ("exit 1", True),
+    ("exit 1 after retry", True),
+]
+
+_REVIEW_FIX_SUCCESS_CASES = [
+    # M1: digit-after-colon zeros are success summaries, not failures.
+    ("errors: 0", False),
+    ("Errors: 0, warnings: 5", False),
+    ("12 passed, errors: 0", False),
+    ("errors : 0", False),
+    ("error: none", False),
+    ("Error: null", False),
+    # M2/L1 symmetric zeros and no-phrases for the widened family.
+    ("0 failures", False),
+    ("failures: 0", False),
+    ("no failures", False),
+    ("0 timed out, 12 passed", False),
+    ("tests timed out: 0", False),
+    ("no timed out tests", False),
+    ("no requests timed out", False),
+    # M3 zero-side guard: a giant all-zero width is still zero.
+    ("0" * 5000 + " failed", False),
+    ("failures: " + "0" * 5000, False),
+    ("exit 0", False),
+]
+
+
+@pytest.mark.parametrize(
+    "text,expected", _REVIEW_FIX_FAILURE_CASES + _REVIEW_FIX_SUCCESS_CASES
+)
+def test_cycle10_review_fixes_colon_counts_failures_family_and_guard(text, expected):
+    assert looks_like_error(text) is expected
+
+
+def test_cycle10_review_fixes_looks_like_error_never_raises():
+    # The classifier is a predicate consumed raw at the hooks boundary
+    # and by backfill per session; overlong count widths must classify,
+    # not raise (guards.py/review M3, hooks.py:52-57 containment stays a
+    # backstop, not the contract).
+    for payload in (
+        "1" * 6000 + " failed",
+        "1" * 6000 + " failures",
+        "failures: " + "9" * 6000,
+        "timed out after " + "1" * 6000 + " seconds",
+        {"stdout": "checksum " + "1" * 6000 + " failed"},
+    ):
+        assert looks_like_error(payload) is True

@@ -3,8 +3,11 @@
 In-tree canonical copy (cycle-7 independent-review finding 5): the work-order
 citations previously resolved only to the ephemeral /tmp path. REPO is derived
 from this file's location so the harness runs from any checkout; run as
-`python scripts/repro-pass7.py` and expect `48/48 probes matched sane
-expectation` (35 pass-7 + 8 pass-8 + 5 pass-9 records added in cycle 9).
+`python scripts/repro-pass7.py` and expect `58/58 probes matched sane
+expectation` (35 pass-7 + 8 pass-8 + 5 pass-9 records added in cycle 9,
+plus 6 cycle-10 U86 vocabulary records and 4 cycle-10 review-fix records:
+f86g colon-zero answers, f86h failures/timed-out count forms, f86i
+overlong-count guard, f86j exit-N short form).
 """
 import json
 import sys
@@ -284,6 +287,56 @@ _r79 = backfill_sessions(sessions_dir=_legacy9, store=_store79, days=365)
 rec("f79c NaN status record imports without aborting the backfill",
     (_r79["sessions_imported"], _r79["sessions_failed"], _r79["files_failed"]), (1, 0, 0))
 _store79.close()
+
+print("== F86: free-text vocabulary widening (cycle 10 U86) ==")
+# pass-7 F4 probe set: six real failure phrasings the exit-code arms and
+# the failed-only verb family classified as success before U86.
+rec("f86a ERROR log prefix is failure",
+    (looks_like_error("ERROR: file not found"), looks_like_error("ERRORS: 4 found")),
+    (True, True))
+rec("f86b bare exited-N short form is failure, zero stays success",
+    (looks_like_error("exited 1"), looks_like_error("process exited 1"), looks_like_error("exited 0")),
+    (True, True, False))
+rec("f86c failing participle binds counts with interposed nouns",
+    (looks_like_error("3 tests failing"), looks_like_error("10_000 checks failing")),
+    (True, True))
+rec("f86d count-only clauses are self-evidencing failure (entry gate)",
+    (looks_like_error("2 errors"), looks_like_error("4 validation errors"), looks_like_error("1,000 errors")),
+    (True, True, True))
+rec("f86e timed out and permission denied prose arms",
+    (looks_like_error("timed out"), looks_like_error("timed_out waiting for lock"), looks_like_error("permission denied")),
+    (True, True, True))
+rec("f86f widening is symmetric: success narratives stay success",
+    (looks_like_error("error rate healthy"), looks_like_error("no tests failing"),
+     looks_like_error("no parse errors"), looks_like_error("using a 30s timeout"),
+     looks_like_error("0 tests failed"), looks_like_error("0 errors, 12 passed"),
+     looks_like_error("2 errors, no errors since retry")),
+    (False, False, False, False, False, False, True))
+# Cycle-10 review fixes (independent_review findings M1/M2/M3/L1 + exit-arm
+# completion), pinned alongside the U86 records they extend.
+rec("f86g colon-form counts: zeros answer, nonzeros fail (review M1)",
+    (looks_like_error("errors: 0"), looks_like_error("Errors: 0, warnings: 5"),
+     looks_like_error("12 passed, errors: 0"), looks_like_error("error: none"),
+     looks_like_error("Error: null"), looks_like_error("errors : 0"),
+     looks_like_error("errors: 4 found")),
+    (False, False, False, False, False, False, True))
+rec("f86h failures-plural and timed-out count/zero forms (review M2/L1)",
+    (looks_like_error("2 failures"), looks_like_error("3 test failures"),
+     looks_like_error("failures: 2"), looks_like_error("1,000 failures"),
+     looks_like_error("build failures detected"), looks_like_error("0 failures"),
+     looks_like_error("0 timed out, 12 passed"), looks_like_error("tests timed out: 0"),
+     looks_like_error("tests timed out: 3"), looks_like_error("12 timed out"),
+     looks_like_error("no timed out tests"), looks_like_error("no requests timed out")),
+    (True, True, True, True, True, False, False, False, True, True, False, False))
+rec("f86i overlong counts never raise; nonzero widths count as nonzero (review M3)",
+    (looks_like_error("1" * 5000 + " failed"), looks_like_error("1" * 5000 + " errors"),
+     looks_like_error("1" * 5000 + " failures"), looks_like_error("errors: " + "1" * 5000),
+     looks_like_error("0" * 5000 + " failed"), looks_like_error("failures: " + "0" * 5000)),
+    (True, True, True, True, False, False))
+rec("f86j bare exit-N short form (arm completed to exit(?:ed)?)",
+    (looks_like_error("exit 1"), looks_like_error("exit 1 after retry"),
+     looks_like_error("exit=2"), looks_like_error("exit 0"), looks_like_error("exited 1")),
+    (True, True, True, False, True))
 
 print()
 fails = 0
