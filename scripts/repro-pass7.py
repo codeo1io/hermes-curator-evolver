@@ -3,8 +3,9 @@
 In-tree canonical copy (cycle-7 independent-review finding 5): the work-order
 citations previously resolved only to the ephemeral /tmp path. REPO is derived
 from this file's location so the harness runs from any checkout; run as
-`python scripts/repro-pass7.py` and expect `48/48 probes matched sane
-expectation` (35 pass-7 + 8 pass-8 + 5 pass-9 records added in cycle 9).
+`python scripts/repro-pass7.py` and expect `54/54 probes matched sane
+expectation` (35 pass-7 + 8 pass-8 + 5 pass-9 records added in cycle 9,
+plus 6 cycle-10 U86 vocabulary records).
 """
 import json
 import sys
@@ -284,6 +285,31 @@ _r79 = backfill_sessions(sessions_dir=_legacy9, store=_store79, days=365)
 rec("f79c NaN status record imports without aborting the backfill",
     (_r79["sessions_imported"], _r79["sessions_failed"], _r79["files_failed"]), (1, 0, 0))
 _store79.close()
+
+print("== F86: free-text vocabulary widening (cycle 10 U86) ==")
+# pass-7 F4 probe set: six real failure phrasings the exit-code arms and
+# the failed-only verb family classified as success before U86.
+rec("f86a ERROR log prefix is failure",
+    (looks_like_error("ERROR: file not found"), looks_like_error("ERRORS: 4 found")),
+    (True, True))
+rec("f86b bare exited-N short form is failure, zero stays success",
+    (looks_like_error("exited 1"), looks_like_error("process exited 1"), looks_like_error("exited 0")),
+    (True, True, False))
+rec("f86c failing participle binds counts with interposed nouns",
+    (looks_like_error("3 tests failing"), looks_like_error("10_000 checks failing")),
+    (True, True))
+rec("f86d count-only clauses are self-evidencing failure (entry gate)",
+    (looks_like_error("2 errors"), looks_like_error("4 validation errors"), looks_like_error("1,000 errors")),
+    (True, True, True))
+rec("f86e timed out and permission denied prose arms",
+    (looks_like_error("timed out"), looks_like_error("timed_out waiting for lock"), looks_like_error("permission denied")),
+    (True, True, True))
+rec("f86f widening is symmetric: success narratives stay success",
+    (looks_like_error("error rate healthy"), looks_like_error("no tests failing"),
+     looks_like_error("no parse errors"), looks_like_error("using a 30s timeout"),
+     looks_like_error("0 tests failed"), looks_like_error("0 errors, 12 passed"),
+     looks_like_error("2 errors, no errors since retry")),
+    (False, False, False, False, False, False, True))
 
 print()
 fails = 0

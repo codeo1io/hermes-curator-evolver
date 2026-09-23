@@ -777,3 +777,71 @@ _U73_STATUS_PAYLOAD_CASES = [
 @pytest.mark.parametrize("payload,expected", _U73_STATUS_PAYLOAD_CASES)
 def test_u73_status_payloads_int_lines_and_words(payload, expected):
     assert looks_like_error(payload) is expected
+
+
+# ---------------------------------------------------------------------------
+# U86 — free-text failure vocabulary widening (cycle 10, pass-7 F4 probes).
+# The exit-code arms and the ``failed``-only verb family could not see six
+# real-world failure phrasings: the ``ERROR:`` log prefix, bare ``exited 1``
+# (no code/status word), the ``failing`` participle, ``N errors`` counts,
+# ``timed out``, and ``permission denied``. Each widening is symmetric —
+# every success narrative that shares a token with the new arms stays a
+# success, answered positionally per KTD35 where applicable.
+# ---------------------------------------------------------------------------
+
+_U86_FAILURE_CASES = [
+    # pass-7 F4 probe set verbatim
+    ("ERROR: file not found", True),
+    ("exited 1", True),
+    ("3 tests failing", True),
+    ("2 errors", True),
+    ("timed out", True),
+    ("permission denied", True),
+    # widened shapes the probes imply
+    ("ERRORS: 4 found", True),
+    ("process exited 1", True),
+    ("exited 2", True),
+    ("4 validation errors", True),
+    ("1,000 errors", True),
+    ("10_000 checks failing", True),
+    ("timed_out waiting for lock", True),
+    ("Permission Denied", True),
+    ({"status": "timed_out"}, True),
+    ({"status": "permission_denied"}, True),
+]
+
+_U86_SUCCESS_CASES = [
+    # zero stays excluded by [1-9]\d* / count>0 at every widening
+    ("exited 0", False),
+    ("0 errors, 12 passed", False),
+    ("0 failing", False),
+    ("0 tests failed", False),
+    # colon-gated arm: no colon, no keyword hit
+    ("error rate healthy", False),
+    # no-…-failed family widened in step (success claims answer keywords)
+    ("no tests failing", False),
+    ("no parse errors", False),
+    # bare ``timeout`` stays a status word: config narratives are safe
+    ("using a 30s timeout", False),
+    # prior truth pins must survive the widening (KTD35 positional rule)
+    ("0 failed, exit code 1, no errors", False),
+    ("exit code 1, no errors", False),
+]
+
+
+@pytest.mark.parametrize("text,expected", _U86_FAILURE_CASES + _U86_SUCCESS_CASES)
+def test_u86_widened_failure_vocabulary(text, expected):
+    assert looks_like_error(text) is expected
+
+
+def test_u86_positional_rule_survives_widened_kinds():
+    # The keyword-after-success-claim rule holds for the NEW vocabulary
+    # exactly as it does for ``failed``: a failure claim after the last
+    # success phrase stands (docstring pin), and a success phrase in a
+    # DIFFERENT clause never erases a failing clause (S4).
+    assert looks_like_error("no tests failing, deploy timed out: lock held") is True
+    assert looks_like_error("no errors\nearlier permission denied on /tmp/x") is True
+    # A nonzero count is a standing failure claim even when a success
+    # phrase follows in the SAME clause (S1 semantics: "10 failed, 2
+    # passed" pins this for ``failed``; the widened kinds inherit it).
+    assert looks_like_error("2 errors, no errors since retry") is True

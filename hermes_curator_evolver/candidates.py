@@ -105,7 +105,27 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     r"\b(traceback|not[_\s-]?found|exit[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
     r"|exit(?:ed|ing)?(?:[-\s_:=]+with)?[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
     r"|exit[\s_]*=[\s_]*[1-9]\d*"
-    r"|nonzero|failed|size\s+cap|exceeded)\b",
+    r"|nonzero|failed|size\s+cap|exceeded"
+    # Cycle-10 U86 (pass-7 F4 probe set): prose shapes the exit-code arms
+    # could not see. ``exited? N`` is the bare short form with NO
+    # code/status word (zero stays excluded by ``[1-9]\d*``);
+    # ``errors?:`` is the log-line prefix, colon-terminated so success
+    # prose ("no errors", "error rate healthy") never matches;
+    # ``timed[-\s_]*out`` is the verb phrase including joined
+    # ``timed_out`` — bare ``timeout`` stays a status word only, because
+    # config narratives say "30s timeout"; ``permission denied`` and
+    # the ``failing`` participle join ``failed`` as unanswered-failure
+    # keywords that a clause-level success claim can still answer
+    # positionally (KTD35).
+    r"|exited?[-\s_:=]+[1-9]\d*"
+    r"|timed[-\s_]*out"
+    r"|permission\s+denied"
+    r"|failing)\b"
+    # ``errors?:`` lives OUTSIDE the ``\b(...)\b`` group because the arm
+    # ends in a non-word character (``:``): a trailing ``\b`` between
+    # ``:`` and whitespace never holds (probe "ERRORS: 4 found" exposed
+    # it). Its own leading ``\b`` is all it needs.
+    r"|\berrors?[-\s_]*:",
     re.IGNORECASE,
 )
 
@@ -125,8 +145,18 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
 # ("2,048 failed" stays a failure at 2048). Zero-count reports
 # ("0 failed") are success phrases handled by the count parse, not
 # lookbehind tricks.
+#
+# Cycle-10 U86: the verb family widens beyond ``failed`` — ``failing``
+# ("3 tests failing", pass-7 F4) and ``errors?`` ("2 errors",
+# "4 validation errors") — and an optional interposed noun
+# (``(?:\w+\s+)?``) lets the count bind across "3 tests failing" /
+# "1,000 checks failed" shapes. This also repairs a pre-U86 gap on the
+# success side: "0 tests failed" used to miss the count parse (noun in
+# the way), fall to the unanswered-keyword rule, and misclassify as
+# failure; it now resolves to the zero-count success answer.
 _FAILURE_COUNT_PATTERN = re.compile(
-    r"(\d+(?:[,. _]\d+)+|\d+)\s+failed\b", re.IGNORECASE
+    r"(\d+(?:[,. _]\d+)+|\d+)\s+(?:\w+\s+)?(?:failed|failing|errors?)\b",
+    re.IGNORECASE,
 )
 
 # Success-phrase scoping (roadmap U51, assessments S4 + N3): a success
@@ -157,7 +187,12 @@ _CLAUSE_SPLIT_PATTERN = re.compile(
 # 'success: no tests failed' were classified as errors by the bare-keyword
 # scan).
 _SUCCESS_COUNT_PATTERN = re.compile(
-    r"\b0\s+failed\b|\bno\s+errors?\b|\bnothing\s+failed\b|\bno\s+(?:\w+\s+)?failed\b",
+    r"\b0\s+failed\b|\bno\s+errors?\b|\bnothing\s+failed\b|\bno\s+(?:\w+\s+)?failed\b"
+    # Cycle-10 U86: the no-…-failed family widens with the failure
+    # verbs — "no tests failing" / "no parse errors" are success claims
+    # that must answer a keyword hit positionally, exactly like
+    # "no tests failed" (KTD35).
+    r"|\bno\s+(?:\w+\s+)?(?:failing|errors?)\b",
     re.IGNORECASE,
 )
 
@@ -176,8 +211,23 @@ _EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
 # ``exit_code``/``returncode`` keep strict nonzero-is-failure semantics.
 _IN_BAND_SUCCESS_MIN = 200
 _IN_BAND_SUCCESS_MAX = 400
+# Cycle-10 U86 alignment: ``timed_out`` / ``permission_denied`` are
+# exact-match snake_case statuses the prose vocabulary now recognizes;
+# without them a structured ``status: timed_out`` carried no signal and
+# the verdict depended on the payload's prose text alone.
 _STATUS_FAILURE_WORDS = frozenset(
-    {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
+    {
+        "error",
+        "failed",
+        "failure",
+        "timeout",
+        "timed_out",
+        "permission_denied",
+        "cancelled",
+        "canceled",
+        "aborted",
+        "denied",
+    }
 )
 _STATUS_SUCCESS_WORDS = frozenset(
     {"ok", "success", "succeeded", "passed", "completed", "healthy"}
@@ -465,7 +515,15 @@ def _text_bears_failure(text: str) -> bool:
     """
 
     for clause in _CLAUSE_SPLIT_PATTERN.split(text):
-        if not _FAILURE_KEYWORD_PATTERN.search(clause):
+        # Cycle-10 U86: a clause may bear failure ONLY as a count
+        # (``2 errors``, ``4 validation errors`` — no keyword, no colon):
+        # nonzero counts are self-evidencing, so the count pattern is an
+        # entry gate in its own right. Zero-only counts still resolve to
+        # the success answer below ("0 errors" never fails).
+        if not (
+            _FAILURE_KEYWORD_PATTERN.search(clause)
+            or _FAILURE_COUNT_PATTERN.search(clause)
+        ):
             continue
         counts = [
             int(re.sub(r"[,. _]", "", count))
