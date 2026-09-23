@@ -1543,3 +1543,197 @@ maintainer-side), KTD40 (U62 single-gating PROPOSED; ledger at 2/30 days —
 
 Durable lessons folded to `docs/learnings/2026-09-22-cycle-9-compounding.md`
 (L29–L34); the next cycle's assessment carries review and shipping outcomes.
+
+## Extension 2026-09-23 - maintenance cycle 10
+
+Sequence note: per KTD41 the roadmap's "maintenance cycle" sequence and
+U/KTD numbering follow the main chain; this is cycle 10, pass 7 of the
+adversarial assessment. Run `cf968161814b40d7ad4d5760446a4cd6`; research
+attempt `7da8766493924a79bc90611a6cee1c69` (artifact: delegate spool
+`7da8766493924a79bc90611a6cee1c69-research.md`, external to the tree);
+assessment report `docs/assessment/2026-09-23-adversarial-repository-assessment-pass7.md`.
+
+### Assessment pass 7 - headline context
+
+Pass 7 ran in worktree `run-cf968161814b-cf968161` whose base is `a76962c`
+— **10 commits behind live origin/main `27487cd`**; the canonical checkout
+`/work/projects/hermes-curator-evolver` sits at the same stale base (finding
+F1, highest leverage). Tree is green on the stale base: 287/287 tests.
+Findings F2 (credential leakage into publishable SKILL.md evidence blocks),
+F3 (backfill dedupe probes read on the warm writer connection, violating
+storage.py's U53 contract) and F5 (legacy backfill crash containment +
+UnicodeDecodeError gate escape) are **already fixed on main** by U77/U74/U76
+— re-fixing them here would be wasted divergence. F4 (free-text failure
+vocabulary) verified to PERSIST on main. F6-F11 are lows found on the stale
+base and must be re-derived after the base refresh before becoming units.
+
+### New work packets - cycle-10 extensions
+
+- **U85 base refresh (F1).** Rebase the maintenance worktree and fast-forward
+  the canonical checkout to `27487cd`; verify no stale-base drift remains
+  anywhere the campaign touches. Acceptance: both checkouts report `27487cd`;
+  `pytest -q` **410 passed** (cycle-9 baseline) on the refreshed base;
+  `scripts/repro-pass7.py` **48/48 sane, 0 deviations**; `git status` clean
+  of unexpected drift. Evidence: recorded shas + test/corpus transcripts in
+  the implement phase result. Nothing else in cycle 10 lands before this.
+- **U86 classifier free-text vocabulary widening (F4/R2).** Widen the
+  clause-scan vocabulary in `hermes_curator_evolver/candidates.py` — prose
+  failure forms verified misclassified as success on main `27487cd`
+  (`grep -c "timed out\|permission denied"` = 0): `ERROR:`/`error:` lines,
+  `failing`/`failures` plurals, `<N> errors`, `timed out`, `permission
+  denied`, `exited <N>`. Constraints: KTD35 positional success-phrase rule
+  must keep overriding (last success phrase wins); strictly widening, no
+  pinned success case may flip. Acceptance: new pinned corpus records in
+  `scripts/repro-pass7.py` (48 -> 54: one per vocabulary class plus one
+  positional-override pin), corpus all-sane 0 deviations; pytest >= 410 + new
+  unit tests green; the six probe strings from pass 7 classify failure.
+- **U87 dependency-aware impact analysis, dry-run only (R1).** Implement
+  upstream issue pingchesu/hermes-curator-evolver#12 (open since 2026-05-09,
+  community-sourced spec): infer dependency edges from `related_skills`
+  frontmatter, observed co-usage in session evidence, and shared tool usage;
+  expose `hermes-curator-evolver impact --skill <name> --days 30 --format
+  markdown`; every edge carries a source type (`explicit_related_skill`,
+  `co_usage`, `shared_tool`) and a recommended action (`review`, `no-op`,
+  `proposal-only`). **Dry-run only: no cascading writes, ever (KTD43).**
+  Acceptance: CLI + tests for each edge type; an end-to-end fixture where
+  skill A's pending proposal lists skill B via co-usage evidence; README
+  documents the command; pytest green.
+- **U88 competitor-table refresh (R4).** Update the competitor/landscape
+  doc with 2026-09-23 evidence: hermes-dojo dormant since 2026-06-06;
+  AMAP-ML/SkillClaw 2,639 stars (collective agentic evolver); five new
+  sub-20-star entrants in the continuous usage-evidence niche (selftune 17,
+  iEvo, WikiSkill, Evidune, okdk7788/skill-evolution); positioning note that
+  the moat is Hermes-native host telemetry (on_skill_lifecycle, MRU-first
+  SessionDB). Acceptance: doc updated with per-entry date/star evidence refs
+  (gh api lookups recorded in the research artifact); no code change.
+- **U89 hub-index freshness guard (R6).** In hub-facing surfaces, compare
+  skills-index `generated_at` on fetch; if older than 48h, warn and serve
+  the cached copy explicitly rather than treating stale as fresh. Acceptance:
+  unit tests with frozen clock covering fresh/stale/missing fields; no
+  behavior change when the index is daily-fresh.
+
+### Evidence corrections to standing packets (from cycle-10 research)
+
+- **KTD40 ledger: 2/30 -> 3/30 days.** Third consecutive daily-fresh
+  observation 2026-09-23T07:54:20Z, skill_count 100,592 (09-21, 09-22, 09-23;
+  98,326 -> 100,496 -> 100,592 across 09-20..09-23). PR #101237 remains
+  open/unmerged (updated 2026-09-02). Single-gating stands PROPOSED; next
+  re-observation ~2026-10-05.
+- Upstream `pingchesu/hermes-curator-evolver` is quiet 23 days (last commit
+  `45328db04c` 2026-08-31, no releases): the fork's cycle-7/8/9 lead is ours
+  to maintain; no port queue exists. Only open upstream issue is #12 (-> U87).
+- Host signal: hermes-agent PR #116004 (merged 2026-09-19) stops one-shot
+  runs from authoring/loading process skills — one-shot sessions carry
+  degraded skill-evolution signal from v2026.9.19+ hosts. Research-gated
+  follow-up (NOT a unit yet): probe whether state.db exposes run mode; if it
+  does, propose an ingest filter/down-weight for one-shot sessions.
+- Agent Skills spec repo (agentskills/agentskills) quiet since 2026-08-09:
+  no conformance churn; version-under-metadata position stands.
+
+### Rejected directions (research cycle 10)
+
+- Re-fixing F2/F3/F5 on the stale base — already fixed upstream (U77/U74/
+  U76); the base refresh (U85) supersedes any local patch.
+- Ungating U62 now — liveness streak is 3/30; KTD40 not satisfied.
+- Automatic cascading edits for impact analysis — issue #12 itself scopes
+  to dry-run; safety posture is proposal-only (KTD43).
+
+### Decisions
+
+- **KTD42 stale-base ordering rule.** All cycle-10 code units are void
+  until U85 lands; assessments and research may run on any base but their
+  code findings must be re-derived on `27487cd` before unit conversion.
+- **KTD43 impact analysis is dry-run only.** U87 ships an `impact` report
+  surface; downstream effects ride the existing proposal queue; no direct
+  write path from inferred dependencies, matching issue #12's spec.
+
+### Sequencing
+
+U85 first (blocks everything). Then U86 (small, self-contained, corpus
+discipline per U74-era rules). U87 is the flagship; start its design after
+U86 lands. U88/U89 are docs/small and may interleave after U85. Research
+follow-ups (state.db run-mode probe; KTD40 re-observation ~2026-10-05) ride
+the next research phase.
+
+### Cycle 10 batch selection (2026-09-23, prioritize phase)
+
+Selected implementation batch (highest-value coherent set completable
+end-to-end this cycle): **U85 + U86 + U88**.
+First alternate: **U89** — pull in only if all three land green, the full
+3.11+3.12 matrix passes, and the guard stays <= 40 lines.
+Deferred to cycle 11: **U87** (KTD44 below).
+
+Rationale (impact / risk / effort / dependency / strategic value):
+- **U85 (mandatory, first)** — every cycle-10 unit depends on the base
+  being current; mechanical rebase, low conflict risk; makes the upstream
+  security fix (U77 credential scrubbing) live here instead of 10 commits
+  away. Impact: highest. Effort: S. Risk: low-mechanical.
+- **U86 (highest impact per unit effort)** — closes the probe-evidenced
+  free-text failure-vocabulary gap (ERROR:, exited 1, failing, N errors,
+  timed out, permission denied all classify success today; verified still
+  true on live main 27487cd). Same shape as the proven cycle-8 U73
+  truth-table work; corpus pins prevent regression. Impact: high (core
+  evidence-quality function). Effort: M. Risk: low with corpus discipline.
+- **U88 (cheap strategic rider)** — records the competitive moat
+  (Hermes-native host telemetry: on_skill_lifecycle + MRU SessionDB) while
+  five new sub-20-star entrants fill the niche; docs-only. Impact:
+  medium. Effort: S. Risk: none (code untouched).
+- **U89 (alternate)** — worthwhile robustness, independent of the batch
+  theme; strict pull-in criteria keep the cycle completable.
+- **U87 (deferred, KTD44)** — externally demanded (issue #12) and
+  strategically the strongest new capability, but it is a new module +
+  CLI + edge-inference surface: L-effort stacked on a rebase cycle risks
+  end-to-end completeness, and it *benefits* from landing after U86
+  (wider free-text evidence improves its co-usage edges). Cycle-11 anchor.
+
+Risk register for the batch:
+- U85: the uncommitted roadmap modification and the untracked pass-7
+  report must be carried across the rebase (stash + reapply), not dropped;
+  pytest baseline on main is 410 green; u45 (test_storage) and u82
+  (test_review_queue) are load-marginal by design — isolated re-run
+  before calling any single failure a regression.
+- U86: the positional success-phrase rule (cycle-8) must not regress; new
+  corpus records must fail before the fix and pass after; success-phrase
+  controls must stay classified success on both sides.
+- U88: every competitor claim cites its 2026-09-23 gh api evidence ref.
+
+Verification gates (evidence expectations):
+- U85: `git rev-parse HEAD` equals the 27487cd merge in BOTH this worktree
+  and the canonical checkout; pytest 410 green; scripts/repro-pass7.py
+  corpus 48/48 sane; ruff 16 flat.
+- U86: extended corpus N > 48 records, 0 deviations; the six probe
+  phrasings classify failure; controls unchanged.
+- U88: competitor docs table committed with per-row evidence refs.
+
+**KTD44 (2026-09-23):** cycle-10 implementation batch = U85 (base refresh)
++ U86 (classifier vocabulary widening) + U88 (competitor-table refresh);
+U89 first alternate under the pull-in criteria above; U87 deferred to
+cycle 11 as its anchor unit (effort-focus and U86-dependency rationale
+recorded above).
+
+### Cycle 10 compounding status (2026-09-24, compound phase)
+
+Pre-review evidence ledger for the KTD44 batch (full narrative:
+docs/learnings/2026-09-24-cycle-10-compounding.md):
+
+- U85 DONE pre-review: worktree + canonical both at 27487cd; dirty artifacts
+  carried byte-intact (roadmap sha 516dd598... verified on restore).
+- U86 DONE pre-review: vocabulary arms landed (5 hunks in
+  hermes_curator_evolver/candidates.py); corpus 48 -> 54 records, 54/54 sane,
+  0 deviations; ruff 16 flat. Roadmap's 410-test estimate corrected to 414.
+- U88 DONE pre-review: docs/ideation/2026-09-23-cycle-10-extension-research.md
+  (six ranked candidates with dispositions, competitor table, moat).
+- Validation of record: targeted pytest EXIT=0 on the dispatch surface list;
+  full_tests via the engine full_command -> ephemeral cloud-CI PR #9
+  (commit 2d530e6ee7bd, Actions run 35888011758): Python tests (3.12) + Lint
+  ceiling both SUCCESS; PR file list == the 6-file batch exactly.
+- U89 NOT pulled in: pull-in criteria include the full 3.11+3.12 matrix; the
+  PR lane ran 3.12 only. The push-to-main 3.11 leg at ship must go green
+  (u45/u82 load-marginals, #5350) before U89's criteria can be judged met.
+- Cycle-11 inputs carried: U87 = anchor unit (upstream issue #12 spec, see
+  ideation doc R1); F6-F11 re-derive verify-only on the 27487cd base; U62
+  ledger 3/30, next observation ~2026-10-05; R5 needs a state.db run-mode
+  design probe first.
+
+**KTD45 (2026-09-24):** cycle-10 compounding recorded; no new units opened.
+Unit/decision numbering for cycle 11 continues at U90 / KTD46.

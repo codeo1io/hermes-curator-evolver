@@ -105,7 +105,37 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     r"\b(traceback|not[_\s-]?found|exit[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
     r"|exit(?:ed|ing)?(?:[-\s_:=]+with)?[-\s_:=]+(?:code|status)[-\s_:=]+[1-9]\d*"
     r"|exit[\s_]*=[\s_]*[1-9]\d*"
-    r"|nonzero|failed|size\s+cap|exceeded)\b",
+    r"|nonzero|failed|size\s+cap|exceeded"
+    # Cycle-10 U86 (pass-7 F4 probe set): prose shapes the exit-code arms
+    # could not see. ``exit(?:ed)? N`` is the bare short form with NO
+    # code/status word (zero stays excluded by ``[1-9]\d*`` — and the
+    # group is written ``exit(?:ed)?``, not ``exited?``, because
+    # ``exited?`` regex-parses as ``exite|exited`` and missed the plain
+    # shell phrasing "exit 1");
+    # ``errors?:`` is the log-line prefix, colon-terminated so success
+    # prose ("no errors", "error rate healthy") never matches;
+    # ``timed[-\s_]*out`` is the verb phrase including joined
+    # ``timed_out`` — bare ``timeout`` stays a status word only, because
+    # config narratives say "30s timeout"; ``permission denied`` and
+    # the ``failing`` participle join ``failed`` as unanswered-failure
+    # keywords that a clause-level success claim can still answer
+    # positionally (KTD35).
+    r"|exit(?:ed)?[-\s_:=]+[1-9]\d*"
+    r"|timed[-\s_]*out"
+    r"|permission\s+denied"
+    # Cycle-10 review fix (M2): the noun-plural ``failures`` joins the
+    # unanswered-keyword family — the roadmap U86 packet names
+    # "failing/failures plurals", and "build failures detected" carries
+    # no count and no colon, so only a bare keyword sees it. Singular
+    # ``failure`` deliberately stays a structured-status word only.
+    # Zero/count shapes ("0 failures", "2 failures") resolve through
+    # the count parses, not this arm.
+    r"|failing|failures)\b"
+    # ``errors?:`` lives OUTSIDE the ``\b(...)\b`` group because the arm
+    # ends in a non-word character (``:``): a trailing ``\b`` between
+    # ``:`` and whitespace never holds (probe "ERRORS: 4 found" exposed
+    # it). Its own leading ``\b`` is all it needs.
+    r"|\berrors?[-\s_]*:",
     re.IGNORECASE,
 )
 
@@ -125,8 +155,39 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
 # ("2,048 failed" stays a failure at 2048). Zero-count reports
 # ("0 failed") are success phrases handled by the count parse, not
 # lookbehind tricks.
+#
+# Cycle-10 U86: the verb family widens beyond ``failed`` — ``failing``
+# ("3 tests failing", pass-7 F4) and ``errors?`` ("2 errors",
+# "4 validation errors") — and an optional interposed noun
+# (``(?:\w+\s+)?``) lets the count bind across "3 tests failing" /
+# "1,000 checks failed" shapes. This also repairs a pre-U86 gap on the
+# success side: "0 tests failed" used to miss the count parse (noun in
+# the way), fall to the unanswered-keyword rule, and misclassify as
+# failure; it now resolves to the zero-count success answer.
+#
+# Cycle-10 review fixes (M2 + L1): ``failures?`` ("2 failures",
+# "3 test failures") and ``timed[-\s_]*out`` ("12 requests timed out")
+# join the verb family, so their zero forms ("0 failures",
+# "0 timed out, 12 passed") get the zero-count success answer for free
+# from the positional resolver below.
 _FAILURE_COUNT_PATTERN = re.compile(
-    r"(\d+(?:[,. _]\d+)+|\d+)\s+failed\b", re.IGNORECASE
+    r"(\d+(?:[,. _]\d+)+|\d+)\s+(?:\w+\s+)?(?:failed|failing|errors?|failures?|timed[-\s_]*out)\b",
+    re.IGNORECASE,
+)
+
+# Cycle-10 review fixes (M1 + M2 + L1): digit-AFTER-colon count forms.
+# Lint/test-style summaries put the count on the other side of the
+# colon from the noun — ``errors: 4``, ``failures: 2``, ``tests timed
+# out: 3`` — and the same shapes carry the zero answers the review
+# found missing: ``errors: 0`` / ``timed out: 0`` must resolve to the
+# success answer (L2 symmetric-success discipline), while any nonzero
+# count is failure exactly like the digit-before-noun family. Colon +
+# prose (``ERROR: file not found``) stays with the ``errors?:`` keyword
+# arm above; colon + none/null/zero words (``error: none``) are success
+# phrases in _SUCCESS_COUNT_PATTERN.
+_COLON_COUNT_PATTERN = re.compile(
+    r"\b(?:errors?|failures?|timed[-\s_]*out)[-\s_]*:\s*(\d+(?:[,. _]\d+)+|\d+)",
+    re.IGNORECASE,
 )
 
 # Success-phrase scoping (roadmap U51, assessments S4 + N3): a success
@@ -157,7 +218,19 @@ _CLAUSE_SPLIT_PATTERN = re.compile(
 # 'success: no tests failed' were classified as errors by the bare-keyword
 # scan).
 _SUCCESS_COUNT_PATTERN = re.compile(
-    r"\b0\s+failed\b|\bno\s+errors?\b|\bnothing\s+failed\b|\bno\s+(?:\w+\s+)?failed\b",
+    r"\b0\s+failed\b|\bno\s+errors?\b|\bnothing\s+failed\b|\bno\s+(?:\w+\s+)?failed\b"
+    # Cycle-10 U86: the no-…-failed family widens with the failure
+    # verbs — "no tests failing" / "no parse errors" are success claims
+    # that must answer a keyword hit positionally, exactly like
+    # "no tests failed" (KTD35).
+    r"|\bno\s+(?:\w+\s+)?(?:failing|errors?|failures?|timed[-\s_]*out)\b"
+    # Cycle-10 review fixes (M1 + L1): colon-form success answers —
+    # "error: none" / "Error: null" are explicit zero claims (digit
+    # zeros like "errors: 0" resolve through _COLON_COUNT_PATTERN),
+    # and "no timed out tests" / "no requests timed out" answer the
+    # timed-out keyword positionally like every other no-phrase.
+    r"|\b(?:errors?|failures?)\s*:\s*(?:none|null|zero)\b"
+    r"|\bno\s+timed[-\s_]*out\b",
     re.IGNORECASE,
 )
 
@@ -176,8 +249,23 @@ _EXIT_CODE_KEYS = ("exit_code", "returncode", "code")
 # ``exit_code``/``returncode`` keep strict nonzero-is-failure semantics.
 _IN_BAND_SUCCESS_MIN = 200
 _IN_BAND_SUCCESS_MAX = 400
+# Cycle-10 U86 alignment: ``timed_out`` / ``permission_denied`` are
+# exact-match snake_case statuses the prose vocabulary now recognizes;
+# without them a structured ``status: timed_out`` carried no signal and
+# the verdict depended on the payload's prose text alone.
 _STATUS_FAILURE_WORDS = frozenset(
-    {"error", "failed", "failure", "timeout", "cancelled", "canceled", "aborted", "denied"}
+    {
+        "error",
+        "failed",
+        "failure",
+        "timeout",
+        "timed_out",
+        "permission_denied",
+        "cancelled",
+        "canceled",
+        "aborted",
+        "denied",
+    }
 )
 _STATUS_SUCCESS_WORDS = frozenset(
     {"ok", "success", "succeeded", "passed", "completed", "healthy"}
@@ -441,6 +529,29 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
     return _text_bears_failure(text)
 
 
+def _parse_count(raw_count: str) -> int:
+    """Parse a failure-count capture at true magnitude (cycle-10 review M3).
+
+    Guards the py3.11+ integer-string conversion limit: a count wider
+    than ~4300 digits is failure-shaped absurd text, and the pre-fix
+    bare ``int()`` raised ValueError out of ``looks_like_error`` — a
+    predicate-contract breach reachable from ingest
+    (storage.py ``record_tool_call``). hooks.py catches ValueError at the
+    live boundary, but a classifier predicate must not raise; an
+    unparseable width is a nonzero count, not a crash.
+    """
+    stripped = re.sub(r"[,. _]", "", raw_count)
+    # A giant all-zero width ("0"*5000 + " failed") is still zero —
+    # int() raises on ANY string past the 4300-digit limit, zeros
+    # included, so the zero check must precede the guarded conversion.
+    if len(stripped) > 4300 and not stripped.strip("0"):
+        return 0
+    try:
+        return int(stripped)
+    except ValueError:
+        return 1
+
+
 def _text_bears_failure(text: str) -> bool:
     """Clause-scoped keyword scan of a free-text payload (roadmap U51/U67).
 
@@ -450,7 +561,11 @@ def _text_bears_failure(text: str) -> bool:
     order. A clause with explicit ``N failed`` counts is a failure exactly
     when any N > 0 — every digit width and grouping (`,` `.` space `_`),
     with or without a paired
-    passing count (assessments S1 + N1). Positional success-phrase truth
+    passing count (assessments S1 + N1). Digit-after-colon forms
+    (``errors: 4``, ``timed out: 0`` — cycle-10 review M1/M2/L1) follow
+    the same rule through _COLON_COUNT_PATTERN, and overlong counts
+    (beyond the py3.11+ int-str limit) parse as nonzero instead of
+    raising (review M3). Positional success-phrase truth
     (pass-8 F1 / KTD35): the clause's LAST success phrase (a zero-count
     claim or a ``no-…-failed``/``no errors`` phrase) is its final answer —
     it clears the failure evidence that PRECEDES it in the clause, while
@@ -465,11 +580,22 @@ def _text_bears_failure(text: str) -> bool:
     """
 
     for clause in _CLAUSE_SPLIT_PATTERN.split(text):
-        if not _FAILURE_KEYWORD_PATTERN.search(clause):
+        # Cycle-10 U86: a clause may bear failure ONLY as a count
+        # (``2 errors``, ``4 validation errors`` — no keyword, no colon):
+        # nonzero counts are self-evidencing, so the count pattern is an
+        # entry gate in its own right. Zero-only counts still resolve to
+        # the success answer below ("0 errors" never fails).
+        if not (
+            _FAILURE_KEYWORD_PATTERN.search(clause)
+            or _FAILURE_COUNT_PATTERN.search(clause)
+        ):
             continue
         counts = [
-            int(re.sub(r"[,. _]", "", count))
+            _parse_count(count)
             for count in _FAILURE_COUNT_PATTERN.findall(clause)
+        ] + [
+            _parse_count(count)
+            for count in _COLON_COUNT_PATTERN.findall(clause)
         ]
         if any(count > 0 for count in counts):
             return True
@@ -486,6 +612,13 @@ def _text_bears_failure(text: str) -> bool:
             last_success_end = match.end()
         for match in _FAILURE_COUNT_PATTERN.finditer(clause):
             last_success_end = max(last_success_end, match.end())
+        # Colon-form zero counts ("errors: 0", "tests timed out: 0")
+        # are success answers exactly like digit-before-noun zeros
+        # (cycle-10 review M1/L1); nonzero colon counts never reach
+        # here — they returned True in the counts pass above.
+        for match in _COLON_COUNT_PATTERN.finditer(clause):
+            if _parse_count(match.group(1)) == 0:
+                last_success_end = max(last_success_end, match.end())
         if not last_success_end:
             return True
         if _FAILURE_KEYWORD_PATTERN.search(clause[last_success_end:]):
