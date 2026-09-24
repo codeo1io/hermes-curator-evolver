@@ -1543,3 +1543,175 @@ maintainer-side), KTD40 (U62 single-gating PROPOSED; ledger at 2/30 days —
 
 Durable lessons folded to `docs/learnings/2026-09-22-cycle-9-compounding.md`
 (L29–L34); the next cycle's assessment carries review and shipping outcomes.
+
+## Integration fold 2026-09-24 - run 3ed5d14a onto main, renumbered per KTD41
+
+Trigger and shape. Integrating run `3ed5d14a80a245f3bb71735d577be08a`
+(conductor campaign cycle 3 of definition `3d537fab`; per KTD38 the roadmap
+chain's own "cycle 3" is the unrelated 2026-09-02 cycle) raised a pure
+append-vs-append conflict on this file: the run wrote its extension onto the
+stale pre-cycle-7 roadmap (668 lines, base a76962c) while main had appended
+cycles 7-9 and stands at 1545 lines at 27487cd. Conflict case
+1825a597649d46edac3706f992f00712, integration item b0ce32123122. Resolution
+discipline: the ledger above is byte-identical to 27487cd (pre-image
+sha256 6f014c280f9a0252ae8255ae318cc5c03ffafed46ece379e22eca6c0f14bfca5,
+prefix-verified after the append), and the run's block re-enters below under
+KTD41's mandate ("the `3ed5d14a80a2` worktree's U-numbers remain void at
+integration; surviving content must be renumbered into main's sequence").
+The run's own reconciliation header had pre-registered the same rule —
+"append after main's tail; drop this block's U77/U78 in favor of main's
+units and keep the evidence notes" — and both instructions are executed
+here. The run's original un-renumbered block stays readable in its merged
+parent commit 28fecba ("conductor-landing: run=3ed5d14a80a245f3bb71735d577be08a").
+
+### KTD46 (2026-09-24, integration): renumbering map for run 3ed5d14a content
+
+Main-chain numbering is authoritative (KTD41); the run's allocations were
+void. Effective identities after this fold:
+
+- run-U77 classifier numeric-domain hardening -> SUPERSEDED by main's U79
+  (cycle 9, implemented: NaN/Infinity twins guarded in `_status_signal` and
+  the key-pick loop). Not renumbered; evidence note kept below.
+- run-U78 legacy backfill containment + disclosure parity -> SUPERSEDED by
+  main's U76/U78 (cycles 8-9, implemented: per-session crash boundary,
+  undecodable-input containment, read-only reader migration). Not
+  renumbered; evidence note kept below.
+- run-U79 MRU early-terminate probing -> **U90** (unimplemented, carried
+  forward below).
+- run-U80 compression/branch/delegation-aware evidence linking -> **U91**
+  (unimplemented, carried forward below).
+- run-U81 host-budget-aligned generation caps -> **U92** (unimplemented,
+  carried forward below).
+- run-U82 review-queue busy-retry parity -> **U93** (implemented by the
+  run; merged into this tree by this integration, close-pending on this
+  tree's gates).
+- run-U83 restore-drill manifest-path validation parity -> **U94**
+  (implemented by the run; merged into this tree, close-pending on this
+  tree's gates).
+- run-KTD39 (PROPOSED: U62 single-gating) -> SUPERSEDED by main's KTD40
+  (same substance, PROPOSED, ledger 2/30 at the cycle-9 fold). The run's
+  liveness datums join KTD40's ledger; see the evidence note below.
+- Learnings: `docs/learnings/2026-09-22-cycle-3-compounding.md` was written
+  taking L29-L36 on the assumption main's chain stopped at L28; main's
+  cycle-9 compounding had already taken L29-L34. The run's items renumber
+  L29->L35 ... L36->L42 (full map recorded in a dated note inside that
+  doc). Highest-value survivors: L35 (value-per-merge-conflict priority on
+  a stale worktree), L36 (SQLite pragmas split by persistence), L37
+  (`UnicodeDecodeError` subclasses neither OSError nor JSONDecodeError).
+- Code identifiers: the merged modules and tests cite their units as U93/U94
+  (renumbered in this integration; the run's original text in parent commit
+  28fecba says U82/U83).
+- Numbering pointer: the cycle-10 extension (unmerged as of this fold;
+  allocates through U89/KTD45) records "cycle 11 continues at U90 / KTD46".
+  This fold allocates U90-U94 and KTD46 and therefore supersedes that
+  pointer: once the cycle-10 extension and this fold are both on main, unit
+  and decision numbering continues at **U95 / KTD47**.
+
+### Units carried forward (renumbered, unimplemented — assess before scheduling)
+
+**U90 - MRU early-terminate probing for the state-db branch** (was run-U79). Files: `backfill.py`. AC: probe head page; stop early when a page's floor `session_id` < the already-known minimum. E: upstream `SessionDB.search_sessions` already orders MRU-first SQL-side with `LIMIT`/`OFFSET` (host cite `hermes_state_sessions.py:1365`, era b4528e6c98) — the bound is transport-cost aware; re-derive host cites per host version before use. Sequencing note: if the synthetic F86 corpus consolidates into live probing, that gate widens first (verify against main's current state).
+
+**U91 - compression/branch/delegation-aware evidence linking** (was run-U80). Files: `backfill.py`, `storage.py`. AC: resolve tool events whose recorded invocation trail references a compressed/delegated file pair emitted by one tool call (probe claim: `plugin.response_parser.py`-side zlib events arrive as parent/child records whose `_tool_call_id` differs; the deletion-ledger ref needs the association restored before dedupe); bind branch-checkout events to the tool events around them (timestamp-adjacency probe) so cross-branch tool evidence is attributed to the branch it ran on; accept conventional delegated-run markers and route their evidence to the parent run. E: main's U74 landed the id-less fallback (`tool-{message_index}-{index}`) that this unit builds on.
+
+**U92 - host-budget-aligned generation caps** (was run-U81). Files: `auto_evolve.py` (the single-sourced cap constants `_MAX_SKILL_CONTENT_CHARS` / `_AUTO_LOADED_SKILL_MAX_CHARS`), tests `test_auto_evolve.py`. AC: probe and record the host's refusal verdict when a generated skill exceeds its own loading cap; align the plugin's generation-side cap with the host's effective cap instead of the plugin's private constant (feed observed verdicts into the cap boundary; KTD36-disclose any changed default). E: supersedes the U5-rider nuance (U5/U32 measure usage-vs-cap; U92 aligns the cap itself). U32/U5 stay separate units; share the cap helper.
+
+Era note for U90-U92: these definitions were written against the pre-cycle-7
+tree; their code cites are era-stamped, and main's cycle-9 U78 has since
+restructured `backfill.py`'s reader layer. Re-derive every code cite against
+the current tree before scheduling (the run's own standing instruction).
+
+### Implemented by the run, merged here (close-pending on this tree's gates)
+
+**U93 - review-queue busy-retry parity** (was run-U82). `hermes_curator_evolver/review_queue.py` mirrors the evidence store's U7-rider/U45 connection hardening in-module (the stewardship contract routed the mirror variant to keep the diff queue-only; `storage.py` itself is main-modified and untouched): `busy_timeout` + `journal_size_limit` on EVERY `_connect`; WAL applied once per path with DELETE fallback on WAL-incompatible filesystems (logged once per path; tolerates the upstream state layer's WAL-refusal posture); bounded write retry (`_write_with_retry`) classifying busy errors via `storage._is_busy_error`. No schema migration. Tests in `tests/test_review_queue.py`: a second-connection pragma assertion (catches the persistence-split bug where hardening applied only to the first connection) and a wide-margin external-holder test (holder auto-releases ~1s past one busy window; acceptance band 5.0s <= elapsed < 12.0s; pre-fix `OperationalError` proven first). NOTE (was run-L33/L39): this holder test is the same load-sensitivity class as the U45 test — an isolated failure under high load is not a regression without an interleaved A/B.
+
+**U94 - restore-drill manifest-path validation parity** (was run-U83). `hermes_curator_evolver/restore_drill.py` routes manifest `backup_path` fields (target and support entries) through `guarded_apply._resolve_within`, refusing with rollback's verbatim `unsafe-backup-path` string; the import is call-time (`guarded_apply` imports `restore_drill` top-level — the import-direction constraint, now run-L40). Manifest and drill-state readers contain `UnicodeDecodeError` (clean gate failure, never a traceback; same class as backfill P8). Tests in `tests/test_restore_drill.py`: tampered target path, tampered support-entry path, undecodable manifest bytes, undecodable state bytes.
+
+Run-tree validation record (pre-integration, campaign-line baselines): full
+suite 293 passed (287 + 6 batch tests) on both interpreter arms; targeted 34
+passed; ruff flat at 12 on 0.15.10 (the only ruff binary in that
+environment); independent review PASS (attempt 2ea91991, 2026-09-22) and
+release-integrity final validation PASS (attempt 4085ed60) on the run's
+tree. Main-chain baselines stand and are the gates for closing U93/U94 on
+this tree: pytest 410 / corpus 48-54 / ruff 16 per the cycle-9 status and
+cycle-10 extension, plus CI green on the shipped sha. Separation contract
+honored: the queue-only diff (`review_queue.py` + `tests/test_review_queue.py`)
+and the drill-only diff (`restore_drill.py` + `tests/test_restore_drill.py`)
+remain file-disjoint; `storage.py` and `guarded_apply.py` carry zero diff
+hunks (reuse via import/call-time use only).
+
+### Evidence notes retained for superseded packets
+
+- run-U77 -> main U79: the run registered the NaN/Infinity coercion crash
+  (`int(value)` raises on non-finite floats) and the int-0-vs-"0" zero-type
+  split from the pre-U73 tree as supporting evidence. Residual check before
+  closing the thread: confirm main's U79 implementation also normalizes
+  `{"status": 0}` vs `{"status": "0"}` agreement.
+- run-U78 -> main U76/U78: the run registered the
+  `except (OSError, json.JSONDecodeError)` gap and the human-renderer
+  counter parity gap in the same defect class main closed in cycles 8-9.
+  Residual instance on main, registered as a follow-up:
+  `guarded_apply` rollback readers' `UnicodeDecodeError` gap (belongs on
+  main's tree, where `guarded_apply` was reuse-only by contract in the
+  run's cycle).
+- run-KTD39 -> main KTD40: liveness datum recorded by the run's research
+  pass — deployed index HTTP 200 via 301 to
+  `nousresearch.github.io/hermes-agent/docs/api/skills-index.json`,
+  `generated_at` 2026-09-22T07:53:16Z (same-day), `skill_count` 100,496
+  (+2,170 in 2 days), while PR #101237 sat open/unmerged 20+ days. Feeds
+  KTD40's ledger. Dating correction for the run's ideation copy: its
+  "98,326 skills on 2026-09-20 (KTD28)" figure belongs to 2026-09-21 per
+  the authoritative cycle-9 ledger (the cycle-10 review fix corrects the
+  same error in main's ideation doc; a dated note now covers the run's
+  copy too).
+
+### Fresh evidence for existing main-chain units (from the run's research pass)
+
+- **U69 (attribution from the host)** — the `on_skill_lifecycle` payload is
+  fully specified at the source: action, skill_name, provenance, task_id,
+  session_id, use_count, reused, reuse_after_patch — best-effort, emitted
+  only after an authoritative state change whose write landed
+  (`tools/skill_usage.py:468-480`, host cite era b4528e6c98). Strengthens
+  sequencing U69 immediately after its dependency U74 (landed cycle 8);
+  re-read KTD26 first and re-derive host cites per host version.
+- **U56 (hygiene)** — the S10 raw-traceback class re-confirmed on the
+  pre-cycle-7 tree. No AC change.
+- **U32/U5 vs U92** — U32 measures usage-x-size and U5 rides the cap
+  constants; U92 aligns generation caps with the host's refusal verdict.
+  Keep them separate; share the cap helper.
+- **Drill scratch retention** (cycle-1 AC: retention bound or a `--keep`
+  default) was still open on the pre-cycle-7 tree — re-verify against the
+  current tree before scheduling (cycles 7-9 did not touch drill surfaces;
+  this integration's U94 did).
+- Rejected-direction check: the run's units touch none of the standing
+  rejected directions (skills payload in prompts/traceback, benchmark
+  proxies, cross-agent marketplace export).
+
+### Deferred research candidate (no unit)
+
+- Versioned local snapshots of curated skills (content-addressed; optional
+  skillbox-compatible manifest). Re-open when (a) skillbox's manifest
+  format is stable >= 30 days, or (b) U94/rollback work independently
+  needs content-addressed snapshots. Marketplace/cross-agent export stays
+  rejected.
+
+### Sequencing after this fold
+
+Close U93/U94 on this tree's gates (supervisor full-suite + lineage
+validation; CI green on the shipped sha), then U90 (the run's first
+alternate — its pull-in criteria were green-and-flat but the implement
+window had closed) -> U91/U92 post-merge. Standing main-chain order
+elsewhere is unchanged (U75 -> U56 -> U69 per the cycle-9 sequencing; U62
+waits on KTD40's ledger; U82-U84 feature packets keep their main-chain
+identities and remain unimplemented).
+
+### Artifacts and citations (commit-gate paths, all present in this tree)
+
+`docs/ideation/2026-09-22-cycle-3-extension-research.md` ·
+`docs/prioritization/2026-09-22-cycle-3-batch.md` ·
+`docs/stewardship/2026-09-22-cycle-3-stewardship-request.md` ·
+`docs/learnings/2026-09-22-cycle-3-compounding.md` (L29-L36 -> L35-L42 map
+noted in-doc) · `hermes_curator_evolver/review_queue.py` ·
+`hermes_curator_evolver/restore_drill.py` · `tests/test_review_queue.py` ·
+`tests/test_restore_drill.py` · `hermes_curator_evolver/storage.py` ·
+`hermes_curator_evolver/guarded_apply.py` (reuse-only) ·
+`docs/learnings/2026-09-22-cycle-9-compounding.md` (L29-L34 owner).

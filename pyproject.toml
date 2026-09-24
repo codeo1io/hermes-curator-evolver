@@ -39,6 +39,17 @@ Documentation = "https://github.com/pingchesu/hermes-curator-evolver/tree/main/d
 dev = ["pytest>=8"]
 semantic = ["sentence-transformers>=3"]
 
+[dependency-groups]
+# Added 2026-09-24 (integration fold, conflict 7f61f9e4): the fleet's
+# standard fast validation invokes `uv run python -m pytest -q -n N` on a
+# fresh checkout, and uv installs PEP 735 dependency groups (not extras)
+# by default — before this group that command died with "No module named
+# pytest". The `dev` EXTRA above stays the pip/CI contract
+# (`pip install -e '.[dev]'`, see CONTRIBUTING.md and ci.yaml); this group
+# mirrors it for uv and adds pytest-xdist so the `-n` parallel flag works.
+# Runtime dependencies are unchanged (PyYAML only).
+dev = ["pytest>=8", "pytest-xdist>=3.5"]
+
 [project.scripts]
 hermes-curator-evolver = "hermes_curator_evolver.__main__:main"
 
