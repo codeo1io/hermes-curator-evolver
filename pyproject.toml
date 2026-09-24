@@ -36,8 +36,23 @@ Issues = "https://github.com/pingchesu/hermes-curator-evolver/issues"
 Documentation = "https://github.com/pingchesu/hermes-curator-evolver/tree/main/docs"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# Keep the `dev` extra and the PEP 735 `dependency-groups` `dev` group below
+# equivalent: `pip install -e ".[dev]"` (CI) resolves the extra, while
+# `uv run` (Conductor integration validation, local dev) installs only the
+# default `dev` group — never extras — so the group must carry the full test
+# closure on its own. pytest-xdist is required by the integration
+# validator's parallel flag (`python -m pytest -n N`).
+dev = [
+  "pytest>=8",
+  "pytest-xdist>=3",
+]
 semantic = ["sentence-transformers>=3"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-xdist>=3",
+]
 
 [project.scripts]
 hermes-curator-evolver = "hermes_curator_evolver.__main__:main"

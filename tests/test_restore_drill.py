@@ -523,3 +523,85 @@ def test_cli_parser_accepts_require_restore_drill_flag():
     ])
     assert args.require_restore_drill is True
     assert args.restore_drill_state_file == "state.json"
+
+
+def test_run_restore_drill_refuses_tampered_backup_path_outside_backup_dir(tmp_path):
+    """U94: manifest backup paths are untrusted (parity with rollback U3/N1)."""
+
+    apply_result = _apply_for_drill(tmp_path)
+    manifest_path = Path(apply_result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("must not be read into the drill\n", encoding="utf-8")
+    manifest["backup_path"] = str(secret)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = run_restore_drill(manifest_path, target_dir=tmp_path / "drill")
+
+    assert report["status"] == "fail"
+    assert "unsafe-backup-path" in report["errors"]
+    by_name = {check["name"]: check for check in report["checks"]}
+    assert by_name["target-recovery"]["status"] == "fail"
+    assert by_name["target-recovery"]["reason"] == "unsafe-backup-path"
+    drill_root = Path(report["drill_target"])
+    assert not (drill_root / "outside-secret.txt").exists()
+
+
+def test_run_restore_drill_refuses_tampered_support_backup_path(tmp_path):
+    """U94: support-file backup paths get the same containment refusal."""
+
+    apply_result = _apply_for_drill(tmp_path)
+    manifest_path = Path(apply_result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    payload = outside / "payload.txt"
+    payload.write_text("leak\n", encoding="utf-8")
+    manifest["support_files"] = [
+        {
+            "path": "references/leak.md",
+            "kind": "reference-spillover",
+            "backup_path": str(payload),
+            "sha256": None,
+        }
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = run_restore_drill(manifest_path, target_dir=tmp_path / "drill")
+
+    assert report["status"] == "fail"
+    by_name = {check["name"]: check for check in report["checks"]}
+    support = by_name["support-files-recovery"]
+    assert support["status"] == "fail"
+    assert support["entries"][0]["reason"] == "unsafe-backup-path"
+    drill_root = Path(report["drill_target"])
+    assert not (drill_root / "references" / "leak.md").exists()
+
+
+def test_run_restore_drill_reports_undecodable_manifest_cleanly(tmp_path):
+    """U94: undecodable manifest bytes fail the report, never a traceback."""
+
+    apply_result = _apply_for_drill(tmp_path)
+    manifest_path = Path(apply_result["manifest_path"])
+    manifest_path.write_bytes(b"\xff\xfe\x00garbage \xffbytes")
+
+    report = run_restore_drill(manifest_path, target_dir=tmp_path / "drill")
+
+    assert report["status"] == "fail"
+    assert "manifest-not-readable:UnicodeDecodeError" in report["errors"]
+
+
+def test_evaluate_restore_drill_gate_blocks_undecodable_state_when_required(tmp_path):
+    """U94: undecodable state bytes surface as a gate failure, not a crash."""
+
+    state_path = tmp_path / DRILL_STATE_FILENAME
+    state_path.write_bytes(b"\xff\xfe\xff\x00")
+
+    warn_gate = evaluate_restore_drill_gate(state_path, require=False)
+    block_gate = evaluate_restore_drill_gate(state_path, require=True)
+
+    assert warn_gate["allowed"] is True
+    assert warn_gate["reason"] == "restore-drill-state-unreadable-warning"
+    assert block_gate["allowed"] is False
+    assert block_gate["reason"] == "restore-drill-state-unreadable"
+    assert block_gate["state_error"] == "state-unreadable:UnicodeDecodeError"

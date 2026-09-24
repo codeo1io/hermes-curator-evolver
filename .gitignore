@@ -22,3 +22,7 @@ backups/
 # Editors
 .vscode/
 .idea/
+
+# uv scratch lockfile (created by `uv run` during integration validation;
+# the repo pins no lockfile — dependency floors live in pyproject.toml)
+uv.lock
