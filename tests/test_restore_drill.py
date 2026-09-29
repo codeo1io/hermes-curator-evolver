@@ -118,8 +118,12 @@ def test_register_support_file_rejects_unsafe_relative_paths(tmp_path):
     assert absolute["reason"] == "unsafe-relative-path"
 
 
-def test_run_restore_drill_passes_for_clean_manifest(tmp_path):
+def test_run_restore_drill_passes_for_clean_manifest(tmp_path, monkeypatch):
     apply_result = _apply_for_drill(tmp_path)
+    # U96: db_path must live under the configured evidence root; point the
+    # env override at the fixture root (this is exactly how CI/operator
+    # environments configure a non-default evidence store).
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "evidence.sqlite"))
     skill_dir = tmp_path / "skills" / "store-playbook"
     support_file = skill_dir / "references" / "evidence.md"
     support_file.parent.mkdir(parents=True)
@@ -233,8 +237,9 @@ def test_run_restore_drill_warns_and_does_not_escape_for_unsafe_support_paths(tm
     assert not (tmp_path / "absolute.md").exists()
 
 
-def test_run_restore_drill_warns_when_scheduler_paths_missing(tmp_path):
+def test_run_restore_drill_warns_when_scheduler_paths_missing(tmp_path, monkeypatch):
     apply_result = _apply_for_drill(tmp_path)
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "evidence.sqlite"))
     # Provide an SQLite DB so evidence check passes; leave scheduler path missing.
     db_path = tmp_path / "evidence.sqlite"
     sqlite3.connect(str(db_path)).close()
@@ -605,3 +610,115 @@ def test_evaluate_restore_drill_gate_blocks_undecodable_state_when_required(tmp_
     assert block_gate["allowed"] is False
     assert block_gate["reason"] == "restore-drill-state-unreadable"
     assert block_gate["state_error"] == "state-unreadable:UnicodeDecodeError"
+
+
+def test_evidence_probe_leaves_quiescent_wal_database_untouched(tmp_path, monkeypatch):
+    """U96: the drill's evidence probe must be read-only end to end.
+
+    Regression pin for the assess F2 probe: an EvidenceStore-closed WAL
+    database is quiescent (companions checkpointed away). The old
+    read-write probe re-materialized ``-shm``/``-wal`` and checkpointed
+    on close. With the ``mode=ro`` handle the directory must be
+    byte-for-byte untouched by the drill.
+    """
+
+    db_path = tmp_path / "evidence.sqlite"
+    store = EvidenceStore(db_path)
+    store.record_tool_call(
+        session_id="sess",
+        tool_name="Read",
+        args={"path": "/tmp/x"},
+        result="ok",
+    )
+    store.close()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["evidence.sqlite"]
+
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(db_path))
+    apply_result = _apply_for_drill(tmp_path)
+    skill_dir = tmp_path / "skills" / "store-playbook"
+    support_file = skill_dir / "references" / "evidence.md"
+    support_file.parent.mkdir(parents=True)
+    support_file.write_text("# evidence body\n", encoding="utf-8")
+    register_support_file_in_manifest(
+        apply_result["manifest_path"],
+        source_path=support_file,
+        relative_path="references/evidence.md",
+        kind="reference-spillover",
+    )
+    (tmp_path / "fake.service").write_text("[Service]\n", encoding="utf-8")
+    manifest_path = Path(apply_result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text())
+    manifest["evidence"] = {
+        "db_path": str(db_path),
+        "session_ids": ["sess"],
+        "sessions": 1,
+        "turns": 1,
+        "records": 1,
+        "new_records": 1,
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    # Snapshot the world the drill is about to touch. The apply helper's
+    # own store use may leave WAL companions behind — that is pre-existing
+    # state, not the drill's doing. U96's promise: the DRILL adds no
+    # companion and checkpoints nothing (the old read-write probe's
+    # close-checkpoint would have removed an existing -wal and rewritten
+    # the db bytes — both shapes are caught below).
+    import hashlib
+
+    def _snapshot() -> tuple[list[str], str]:
+        names = sorted(
+            p.name for p in tmp_path.iterdir() if p.name != "drill"
+        )
+        digest = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        return names, digest
+
+    before = _snapshot()
+
+    report = run_restore_drill(manifest_path, target_dir=tmp_path / "drill")
+
+    assert report["status"] == "pass"
+    by_name = {c["name"]: c for c in report["checks"]}
+    assert by_name["evidence-references"]["status"] == "pass"
+    after = _snapshot()
+    assert after == before, (
+        f"drill mutated evidence artifacts: {before} -> {after}"
+    )
+
+
+def test_evidence_probe_refuses_db_path_outside_the_evidence_root(
+    tmp_path, tmp_path_factory, monkeypatch
+):
+    """U96: a manifest may not point the drill at arbitrary files.
+
+    ``db_path`` is trusted input; anything resolving outside the
+    configured evidence root is refused with the U94-style refusal
+    BEFORE any open attempt — a tampered manifest must not turn the
+    drill into an arbitrary-file oracle. The planted file is not even
+    SQLite: a refusal proves the open never happened, where the old
+    code would have failed with a database error instead.
+    """
+
+    outside = tmp_path_factory.mktemp("outside")
+    planted = outside / "evil.sqlite"
+    planted.write_text("definitely not a database")
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "evidence.sqlite"))
+    apply_result = _apply_for_drill(tmp_path)
+    manifest_path = Path(apply_result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text())
+    manifest["evidence"] = {
+        "db_path": str(planted),
+        "session_ids": [],
+        "sessions": 0,
+        "turns": 0,
+        "records": 0,
+        "new_records": 0,
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    report = run_restore_drill(manifest_path, target_dir=tmp_path / "drill")
+
+    assert report["status"] == "fail"
+    by_name = {c["name"]: c for c in report["checks"]}
+    assert by_name["evidence-references"]["status"] == "fail"
+    assert by_name["evidence-references"]["reason"] == "unsafe-db-path"

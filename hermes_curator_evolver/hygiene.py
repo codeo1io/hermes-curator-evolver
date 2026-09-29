@@ -1,4 +1,5 @@
-"""Credential hygiene for the evidence pipeline (roadmap U77, cycle 9).
+"""Credential hygiene for the evidence pipeline (roadmap U77, cycle 9;
+families extended in roadmap U95, cycle 11).
 
 The curator ingests verbatim tool transcripts and embeds compact previews
 into stored evidence rows, auto-generated ``SKILL.md`` blocks, spill files,
@@ -34,14 +35,63 @@ from typing import Final
 # generic ``token=…`` arm never re-matches an already-inserted marker (its
 # lookahead refuses a value beginning with ``[``).
 _CREDENTIAL_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
-    ("github-fine-grained-pat", re.compile(r"github_pat_[A-Za-z0-9_]{82}")),
+    # GitHub families (U77; tolerance widened in U95): the fine-grained
+    # shape guard is the prefix + character class, not an exact length —
+    # issued bodies are 82 chars today, but {36,} keeps short/rotated
+    # variants inside the scrub instead of sailing through.
+    ("github-fine-grained-pat", re.compile(r"github_pat_[A-Za-z0-9_]{36,}")),
     ("github-token", re.compile(r"\bghp_[A-Za-z0-9]{36}\b")),
     ("github-oauth", re.compile(r"\bgho_[A-Za-z0-9]{36}\b")),
     ("github-user-token", re.compile(r"\bghu_[A-Za-z0-9]{36}\b")),
     ("github-server-token", re.compile(r"\bghs_[A-Za-z0-9]{36}\b")),
     ("github-refresh-token", re.compile(r"\bghr_[A-Za-z0-9]{76}\b")),
+    # Google API keys (U95): AIza prefix + 35 key characters.
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    # AWS secret-access-key HALF (U95): the AKIA arm catches the public
+    # id half; this catches the actually-secret half only when an aws
+    # secret-key label sits within 30 chars ahead of the 40-char value —
+    # the label guard keeps bare 40-char base64 blobs in prose intact.
+    (
+        "aws-secret-key",
+        re.compile(
+            r"(?i)\baws.{0,30}?secret(?:[_ ]access)?[_ ]?key\b[\"' ]*[:=][ ]?[\"']?"
+            r"[A-Za-z0-9/+=]{40}\b"
+        ),
+    ),
+    # PEM private keys (U95): the full block first (the body IS the
+    # secret), then the BEGIN header alone for truncated pastes.
+    (
+        "pem-private-key-block",
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+            r"(?s:.*?)-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+        ),
+    ),
+    (
+        "pem-private-key-header",
+        re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"),
+    ),
+    # Signed JWTs in Authorization headers (U95): three dot-separated
+    # base64url segments with real payload/signature heft, so prose like
+    # ``Bearer a.b.c`` never matches.
+    (
+        "bearer-jwt",
+        re.compile(
+            r"\bBearer\s+[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}\b"
+        ),
+    ),
     ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("openai-or-anthropic-key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")),
+    # sk- keys (U77; guard added in U95): the lookahead requires a digit
+    # within the first two character runs after the prefix — issued
+    # OpenAI (sk-..., sk-proj-...) and Anthropic (sk-ant-api03-...) shapes
+    # all qualify, while benign hyphenated prose (sk-learn-library-
+    # versions, even version-tagged ...-v2) never does.
+    (
+        "openai-or-anthropic-key",
+        re.compile(
+            r"\bsk-(?:ant-)?(?=[A-Za-z0-9]*(?:-[A-Za-z0-9]*)?\d)[A-Za-z0-9_-]{20,}\b"
+        ),
+    ),
     ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     (
         "generic-token-assignment",

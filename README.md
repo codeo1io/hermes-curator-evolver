@@ -334,6 +334,17 @@ hermes-curator-evolver candidates --query "中文 mixed agent skill" --skills-di
 hermes-curator-evolver audit-skills --skills-dir ~/.hermes/skills --format json
 hermes-curator-evolver merge-check --source ~/.hermes/skills/sangfor-devices --target ~/.hermes/skills/infrastructure --format json
 
+# Dependency impact analysis (dry-run, never writes — KTD43)
+hermes-curator-evolver impact --skill hermes-agent --days 30
+hermes-curator-evolver impact --skill hermes-agent --days 30 --format json
+hermes-curator-evolver impact --skill hermes-agent --skills-dir ~/.hermes/skills
+# Surfaces three edge sources, each with a recommended action:
+#   explicit_related_skill  (frontmatter `related_skills`) → review
+#   co_usage (≥2 shared sessions → review; 1 → no-op)
+#   shared_tool (tool overlap → proposal-only)
+# Answers upstream issue #12: "what else should I look at if this skill
+# changes?" without touching the evidence store or any skill file.
+
 # Guarded apply
 sha256sum ./SKILL.md
 hermes-curator-evolver apply \

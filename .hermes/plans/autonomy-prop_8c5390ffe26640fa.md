@@ -2000,3 +2000,266 @@ Next free numbering after this fold: **U95 / KTD47** (lessons: L52).
 `hermes_curator_evolver/candidates.py` · `scripts/repro-pass7.py` ·
 `tests/test_candidates.py` · `.hermes/plans/autonomy-prop_8c5390ffe26640fa.md`
 (this file).
+
+## Extension 2026-09-30 - maintenance cycle 11
+
+Sequence note: per KTD41 the roadmap's "maintenance cycle" sequence and
+U/KTD numbering follow the main chain. The conductor campaign restarted
+at cycle 1 under goal `134d4f5724564eaaaa34f407749e7d10` after the
+cycle-10 integration; that campaign cycle 1 is this maintenance cycle 11.
+Run `3d4c7adfe6a0412da0708d5a254f217c`; assessment attempt
+`29f16b72f6794b18b045b8c60bae8eb8`, research attempt
+`491ec50b690b4aa0ba5fe0725be57d6f` (artifacts: delegate spool JSONs plus
+`/tmp/assess-29f16b72/` and `/tmp/research-491ec50b/`, external to the
+tree). Base tree `db9234c` = main right after the cycle-10 integration
+(PR #11 merged); the cf968161 fold's pointer holds: numbering continues
+at U95 / KTD47 / L52. The cycle-10 review's two queued corrective notes
+(corpus 54 -> 58; KTD40 span 09-21..09-23) are ALREADY recorded in that
+fold's corrective block - verified before writing, not duplicated here.
+
+### Assessment cycle 1 - headline context
+
+Fresh adversarial pass on the current main tree `db9234c` (no stale-base
+drift class this time): full read of all 21 package modules, the plugin
+shim, pyproject/plugin.yaml/CI; live probe battery
+(`/tmp/assess-29f16b72/probes.py`, package imported from the worktree);
+full suite 476/476 green in an ephemeral uv env on Python 3.12.14.
+Dedup gates: `docs/assessment/` pass 1-8 plus this roadmap grepped for
+every candidate shape - seven fresh findings, none on record:
+
+- **F1 (M, hygiene)** credential-pattern set diverges from its own U77
+  spec: `github_pat_` and `gh[o,s]_` were specced in the U77 AC design
+  text but never shipped (`hygiene.py:38-45` carries `ghp_`-exact-36
+  only). Probed: a fine-grained PAT, Bearer JWTs, `AIza` keys, PEM
+  blocks, and the AWS secret-key half all pass every scrub layer AND
+  the `skill_validate` publish gate.
+- **F2 (M, security)** the restore drill's "read-only" evidence check
+  opens the manifest-named DB read-write (`restore_drill.py:353`,
+  contradicting the contract comment at :327; `db_path` itself lacks
+  the `_resolve_within` containment U94 gave backup paths). Probed: the
+  rw connect materializes `-shm`/`-wal` on a quiescent WAL db and
+  checkpoints on last close.
+- **F3 (M, correctness)** eight canonical prose failure lines (`FATAL:`,
+  segfault, `curl: (7)`, ECONNREFUSED, OOM, aborted, prose-5xx) all
+  classify success; on-record vocabulary work covered structured
+  payloads and exit-code prose only.
+- **F4 (L)** numeric `--schedule 3600` produces an invalid `OnCalendar=`
+  on Linux (`_validated_on_calendar` returns the bare digits).
+- **F5 (L)** duplicate frontmatter names silently drop a skill from
+  discovery (`discover_skill_files` keeps one of two same-name
+  SKILL.md files, no disclosure).
+- **F6 (L)** unretried `CREATE INDEX` DDL runs on every EvidenceStore
+  construction (0.45 ms mean, takes the write lock, outside the
+  U7-rider/U45 retry ladder; U93 gave review_queue that parity).
+- **F7 (L)** the `sk-` arm redacts benign >=20-char hyphenated tokens
+  (`sk-learn-library-tools`).
+
+Verified-still-open recorded items, NOT re-counted as findings: the
+U7-rider mutex-absence note; the review-chain residual trio
+(`exited 12 hours ago`, `survived all failures`,
+`errors: none of the files loaded`).
+
+### Research cycle 1 - headline context
+
+Six axes, refreshed 2026-09-29/30, dedup baseline
+`docs/ideation/2026-09-23-cycle-10-extension-research.md` re-verified
+first (one attribution corrected: the 09-23 baseline cites no upstream
+issues #74-76; upstream's open-issue set is exactly #12):
+
+- **Upstream zero drift**: `upstream/main` = `45328db` (2026-08-31) IS
+  the fork point - merge-base == tip, 21 ahead / 0 behind / zero merge
+  debt. Upstream #25's `include_compacted` compat already lives in our
+  fork (`backfill.py:195-205`).
+- **Host hermes-agent moved** (5 commits since 09-23): observer-hooks v1
+  contract (`website/docs/developer-guide/observer-hooks.md`: fail-open,
+  additive kwargs, `telemetry_schema_version "hermes.observer.v1"`,
+  correlation IDs session/task/turn/api_request_id) with a ~27-hook
+  roster (`website/docs/user-guide/features/plugins.md:309`) including
+  `api_request_error`, `pre/post_auxiliary_call`,
+  `subagent_start/stop`; secrets hygiene via gitleaks (rm-022/rm-023,
+  `.gitleaksignore` committed). Our plugin subscribes 3 of ~27
+  (`hermes_curator_evolver/__init__.py:73-75`).
+- **Ecosystem**: SkillClaw decelerating (2,650 stars, 42 days quiet,
+  collective-server segment); NEW same-host entrant `zorrobyte/skillhex`
+  (created 2026-09-21, arXiv:2608.05628: evidence-gated evolution,
+  per-skill executable tests, reversible patch search; traction nil) -
+  missed by the 09-23 baseline; sies (utility decay),
+  skill-maintenance-mcp (MCP toolchain), skill-circuit (evidence
+  protocol) active. SKILL.md + frontmatter is the de facto standard
+  across all entrants.
+- **Index**: live and daily - `skill_count` 101,156 at
+  `generated_at` 2026-09-29T08:00Z (+564 in 6 days); PR #101237 still
+  OPEN (U62/KTD40 double-gate unchanged).
+- **Dependencies**: runtime dep surface is PyYAML>=6 only (healthy);
+  one LOW gap - the `semantic` extra pins `sentence-transformers>=3`
+  while latest is 6.1.0 (three majors above the validated floor), and
+  CI installs `.[dev]` only, so the embedding path is never exercised
+  by any automated gate.
+
+### KTD40 ledger observation (2026-09-29)
+
+Index liveness datum for KTD40's ledger: HTTP 200,
+`generated_at 2026-09-29T08:00:00Z` (same-day fresh), `skill_count`
+101,156 (98,326 -> 100,496 -> 100,592 -> 101,156 across 09-21..09-29);
+PR #101237 open/unmerged. Streak 4/30; next observation ~2026-10-05 per
+the standing cadence. Single-gating (KTD40, PROPOSED) unchanged.
+
+### New work packets - cycle-11 extensions
+
+Ten units, two decisions. Standing siblings respected: U98 excludes
+U69's surface; U102 sequences beside U84 (sessions) and U82
+(validate conformance); no new MCP unit (U72 stands, demand-gated).
+
+- **U95 - hygiene pattern-family table (F1+F7; research C3).** Replace
+  the hand-grown credential list in `hygiene.py:38-45` with a
+  data-driven family table. AC: families cover at minimum
+  `github_pat_[A-Za-z0-9_]{36,}`, `gh[oasr]_[A-Za-z0-9]{36,}` prefixes
+  (gho_/gha_/ghs_/ghu_/ghr_), Bearer JWT shape (three dot-separated
+  base64url segments), `AIza[0-9A-Za-z_-]{35}`, the AWS secret-key half
+  (`[A-Za-z0-9/+=]{40}` behind a key-context guard), PEM
+  `-----BEGIN ... PRIVATE KEY-----` blocks, and the existing
+  `ghp_`/`sk-`/`xox[baprs]-` arms; `sk-` gains a shape guard so
+  `sk-learn-library-tools` survives (F7); the F1 probe set graduates
+  from `/tmp/assess-29f16b72/probes.py` into pinned tests
+  (PAT/JWT/AIza/PEM/AWS-half each redact in `scrub_layer` AND fail
+  `skill_validate`); stdlib-only core preserved (KTD47); zero pinned
+  success cases flip. E: probe transcript + test corpus.
+- **U96 - restore-drill read-only evidence handle (F2).** AC: the drill
+  opens the manifest-named evidence DB via URI `mode=ro` (or
+  `query_only=1`) and routes `db_path` through
+  `guarded_apply._resolve_within` with rollback's verbatim refusal
+  string (U94 parity); a quiescent WAL db gains no `-shm`/`-wal`
+  companions and no checkpoint-on-close after the drill reads it (the
+  assess probe shape); the contract comment at `restore_drill.py:327`
+  and the code agree; tests pin both the ro-open and the containment
+  refusal. E: probe transcript.
+- **U97 - classifier prose-failure vocabulary extension (F3).** Widen
+  the clause-scan to canonical prose failure forms on the SAME
+  strictly-widening constraints as U86: `FATAL:` prefix, `segfault`,
+  `curl: (<N>)` transport errors, `ECONNREFUSED`/`ECONNRESET`/
+  `ETIMEDOUT` errno tokens, `OOM`/`out of memory`, `aborted`,
+  prose-5xx (`500`/`502`/`503`/`5xx` as words). AC: the eight F3 probe
+  lines classify failure; the S1 pin ("2 errors, no errors since
+  retry" -> failure) and every U86-pinned case hold; corpus extends
+  (58 -> 66+, one record per class plus one positional-override pin).
+  In-unit note: U98's structured `api_request_error` ingestion removes
+  the root class for provider errors; this unit covers the prose tail.
+  E: probe transcript + corpus sane-run.
+- **U98 - observer-hook evidence ingestion (research C1; NOT U69's
+  surface).** Subscribe `api_request_error`, `pre_auxiliary_call`,
+  `post_auxiliary_call`, `subagent_start`, `subagent_stop` (host roster
+  `plugins.md:309`; fail-open, additive kwargs per `observer-hooks.md`)
+  and persist their correlation IDs
+  (session/task/turn/api_request_id). AC: `api_request_error` payloads
+  (status dicts) fail the existing U73 dict arm with zero new
+  classifier code; storage gains the event kinds via an additive
+  migration (KTD48); subagent rows correlate to parent tasks; the
+  plugin stays fail-open under hook errors (contract test);
+  version-gated subscription visible in `doctor --host-compat`. E:
+  cite host docs at the implementing host version (era discipline);
+  sequence after or with U69.
+- **U99 - per-skill executable test gate at apply (research C2;
+  skillhex-shaped).** AC: `guarded_apply` pre-commit runs a skill's
+  declared smoke test (`tests/` in the skill dir or a frontmatter
+  command) inside the existing guard rails when one exists; failure ->
+  rollback via the drill machinery with the test transcript in the
+  refusal disclosure; skills without tests skip with disclosure (no
+  mandatory-test policy - KTD36 disclosure rules); no network in the
+  test sandbox. E: fixture skill with a failing test pinned.
+- **U100 - skill-usage telemetry and decay-weighted prioritization
+  (research C4; consumes U69's lifecycle events and `.usage.json`).**
+  AC: new `skill_use` evidence kind (additive); decay-weighted ranking
+  in the semantic candidate selector (half-life policy recorded at
+  implementation; floor + disclosure per KTD36); dormant skills
+  (unused > N days) surface as archive PROPOSALS through the review
+  queue, never direct writes. E: synthetic timeline fixture.
+- **U101 - index near-duplicate publish gate (research C5).** AC:
+  `skill_validate` (U82's surface) gains an optional near-duplicate
+  check against a cached skills-index snapshot (embedding cosine via
+  the `semantic` extra; skip-clean when the extra is absent);
+  threshold and matches disclosed in the validate report; cache TTL
+  >= 24h (the index regenerates daily 08:00Z); zero new hard runtime
+  deps. E: pinned fixture pair.
+- **U102 - cross-format skill import (research C6; sibling of U84's
+  session importers, not a duplicate).** Import SKILLS (not sessions)
+  from Claude/Codex/Gemini skill formats - SKILL.md + frontmatter is
+  now the de facto standard across entrants, so the adapter is mostly
+  copy + validate through the existing scrub/validate pipeline. AC:
+  `--format claude|codex|gemini` import surface reusing the U74
+  identity scheme, U76 crash containment, and U95 scrub; AC-zero
+  (design-first, like U84) is a format-stability survey of the three
+  formats. E: survey artifact + one fixture per format.
+- **U103 - robustness bundle (F4+F5+F6).** AC: `_validated_on_calendar`
+  rejects bare numerics with a unit-hint error (`3600` is a cadence in
+  seconds, not a calendar spec - suggest the interval form or
+  `OnUnitActiveSec`); `discover_skill_files` detects same-name
+  collisions across roots and surfaces BOTH paths with an explicit
+  disclosure (no silent drop); `EvidenceStore.__init__` DDL moves
+  behind an idempotence check (or once-per-path guard) and joins the
+  U7-rider/U45 retry ladder. E: one pinned test per fix.
+- **U104 - semantic-extra validation leg + fork metadata rider.** AC:
+  EITHER pin `sentence-transformers>=3,<validated-major>` with the
+  exercised range recorded, OR add a CI leg installing `.[semantic]`
+  that runs an embedding smoke test (CI currently installs `.[dev]`
+  only); README documents the validated range. Rider: repoint
+  `pyproject.toml` `[project.urls]` at the fork (they still point at
+  upstream pingchesu URLs) and record the fork's issues-disabled
+  posture plus the upstream channel in README's support section.
+  E: CI transcript.
+
+- **KTD47 (2026-09-30, DECIDED): hygiene family source = vendored
+  pattern table, gitleaks-optional.** The host adopted gitleaks as its
+  secrets authority (rm-022/rm-023); this repo keeps a stdlib-only
+  core, so U95 vendors a gitleaks-derived family TABLE (data only,
+  license noted in-file) and MAY add an optional gitleaks-binary
+  integration behind an env flag later. Never a hard dependency.
+- **KTD48 (2026-09-30, PROPOSED): observer-hook storage policy.** New
+  hook events persist as new `kind`s with a JSON correlation block
+  (additive columns only, no reshape of existing rows); retention
+  inherits the store TTL; fail-open reliance (host contract) is
+  accepted and disclosed in `doctor`. Confirm at U98 implementation
+  time against the then-current host docs.
+
+### Dedup and correction notes (append-only)
+
+- The two corrective notes the cycle-10 review queued for "cycle 11"
+  are ALREADY landed in the cf968161 fold's corrective block (corpus
+  58 / 470 collected; KTD40 span 09-21..09-23) - verified before
+  writing; not duplicated.
+- Research attribution fix for this campaign's records: the 09-23
+  ideation baseline cites no upstream issues #74-76 (grep-verified);
+  upstream's open-issue set is exactly #12. Any summary claiming
+  otherwise is wrong.
+- R5 (state.db run-mode design probe, riding "the next research phase"
+  per the cf968161 fold) was NOT executed this cycle: research verified
+  the compat surface only (`include_compacted` present,
+  `backfill.py:195-205`), and assess F2 landed the adjacent
+  read-only-handle finding on the drill's evidence DB. R5 stays
+  pending; fold its design probe into U96 or the next research pass.
+- No new MCP unit: research C7 corroborates standing U72's demand gate
+  (the ecosystem shipped skill-maintenance-mcp; our gate stands until a
+  real consumer appears).
+
+### Sequencing after this extension
+
+U87 remains the cycle-11 anchor (KTD44 standing; note U83 covers the
+same upstream #12 trigger with a merge-check shape - reconcile U83 vs
+U87 scopes at prioritization). Batch selection belongs to the
+prioritization phase; pull-in case noted: U95/U96/U97 are tree-verified
+M/L findings with lift-ready probes that pair naturally with the U87
+anchor; U103/U104 are small fill-ins; U98-U102 are design-probe-first
+(U98/U100 are host-contract dependent) or AC-zero-first (U102).
+Standing orders unchanged elsewhere: close U93/U94's gates (CI green on
+the shipped sha - PR #11's CI ran green, confirm at close), U90 ->
+U91/U92, U75 -> U56 -> U69, U62 waits on KTD40's ledger (next
+observation ~2026-10-05, streak 4/30). Next free numbering after this
+extension: **U105 / KTD49** (lessons: L52).
+
+### Artifacts and citations
+
+Delegate spool JSONs `29f16b72f6794b18b045b8c60bae8eb8.json` (assess)
+and `491ec50b690b4aa0ba5fe0725be57d6f.json` (research), external to the
+tree; probe battery `/tmp/assess-29f16b72/probes.py`; research report
+`/tmp/research-491ec50b/report.md` (both /tmp, ephemeral - U95/U97
+graduate the probes into pinned tests rather than citing the scratch
+paths); this file.

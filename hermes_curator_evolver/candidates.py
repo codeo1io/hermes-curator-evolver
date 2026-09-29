@@ -123,6 +123,24 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     r"|exit(?:ed)?[-\s_:=]+[1-9]\d*"
     r"|timed[-\s_]*out"
     r"|permission\s+denied"
+    # Cycle-11 U97 (assess F3 probe set, 2026-09-30): eight canonical
+    # prose failure lines no arm could see. ``fatal`` joins the
+    # unanswered-keyword family (its zero-count and no-phrases are
+    # answered below and in _SUCCESS_COUNT_PATTERN — "0 fatal errors",
+    # "no fatal errors" stay success); ``segfault``/
+    # ``segmentation fault`` with any joiner; ``aborted`` matches the
+    # exposure profile of the existing bare ``failed`` arm (a narrative
+    # "we aborted the old approach" reads as failure — same trade the
+    # ``failed`` arm already makes); the errno family is pure failure
+    # vocabulary that never appears in success prose; ``oom`` /
+    # ``out of memory`` bounded so "bloom"/"room" never match (word
+    # boundary before o only holds at a real token start).
+    r"|fatal"
+    r"|segfault|segmentation[-\s_]*fault"
+    r"|aborted"
+    r"|econnrefused|econnreset|econnaborted|etimedout"
+    r"|ehostunreach|enetunreach|eaddrinuse|enospc"
+    r"|oom|out[-\s_]+of[-\s_]+memory"
     # Cycle-10 review fix (M2): the noun-plural ``failures`` joins the
     # unanswered-keyword family — the roadmap U86 packet names
     # "failing/failures plurals", and "build failures detected" carries
@@ -135,7 +153,17 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     # ends in a non-word character (``:``): a trailing ``\b`` between
     # ``:`` and whitespace never holds (probe "ERRORS: 4 found" exposed
     # it). Its own leading ``\b`` is all it needs.
-    r"|\berrors?[-\s_]*:",
+    r"|\berrors?[-\s_]*:"
+    # Cycle-11 U97: two more outside-group arms, same reason — they end
+    # in non-word characters (``)`` and reason-phrase letters after a
+    # numeric token that must not fuse with a preceding number). The
+    # curl exit prefix ``curl: (7)`` (nonzero only — curl prints the
+    # exit only on failure) and the prose 5xx reason-phrase pair
+    # ``500 Internal Server Error`` (the phrase makes the number
+    # unambiguous; bare numbers stay counts and never match).
+    r"|\bcurl[-\s_]*\(\s*[1-9]\d*\s*\)"
+    r"|\b5\d{2}[-\s_:=]+(?:internal[-\s_]*server[-\s_]*error"
+    r"|bad[-\s_]*gateway|service[-\s_]*unavailable|gateway[-\s_]*timeout)",
     re.IGNORECASE,
 )
 
@@ -223,14 +251,21 @@ _SUCCESS_COUNT_PATTERN = re.compile(
     # verbs — "no tests failing" / "no parse errors" are success claims
     # that must answer a keyword hit positionally, exactly like
     # "no tests failed" (KTD35).
-    r"|\bno\s+(?:\w+\s+)?(?:failing|errors?|failures?|timed[-\s_]*out)\b"
+    r"|\bno\s+(?:\w+\s+)?(?:failing|errors?|failures?|timed[-\s_]*out"
+    r"|oom|out[-\s_]+of[-\s_]+memory)\b"
     # Cycle-10 review fixes (M1 + L1): colon-form success answers —
     # "error: none" / "Error: null" are explicit zero claims (digit
     # zeros like "errors: 0" resolve through _COLON_COUNT_PATTERN),
     # and "no timed out tests" / "no requests timed out" answer the
     # timed-out keyword positionally like every other no-phrase.
     r"|\b(?:errors?|failures?)\s*:\s*(?:none|null|zero)\b"
-    r"|\bno\s+timed[-\s_]*out\b",
+    r"|\bno\s+timed[-\s_]*out\b"
+    # Cycle-11 U97: the zero-count answer widens with one optional
+    # adjective — "0 fatal errors" / "0 parse errors" are explicit
+    # success claims answering the new ``fatal`` keyword (and any other
+    # future keyword the noun family carries), exactly like the
+    # existing "0 tests failed" arm answers ``failed``.
+    r"|\b0\s+(?:\w+\s+)?errors?\b",
     re.IGNORECASE,
 )
 
@@ -265,6 +300,7 @@ _STATUS_FAILURE_WORDS = frozenset(
         "canceled",
         "aborted",
         "denied",
+        "fatal",
     }
 )
 _STATUS_SUCCESS_WORDS = frozenset(

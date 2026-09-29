@@ -64,6 +64,87 @@ def test_u77_scrub_text_replaces_every_credential_family() -> None:
     assert scrub_text(once) == (once, 0)
 
 
+def test_u95_new_credential_families_scrub() -> None:
+    """U95: the four families the cycle-1 assess probes sailed through."""
+    fine_grained_short = "github_pat_" + "a1" * 29  # 58 chars — pre-U95 miss
+    cases = [
+        # fine-grained PAT below the old exact-82 shape now scrubs
+        (fine_grained_short, "[REDACTED:github-fine-grained-pat]"),
+        # Bearer JWT (three base64url segments)
+        (
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4",
+            "[REDACTED:bearer-jwt]",
+        ),
+        # Google API key: AIza + 35
+        (
+            "key = AIzaSyD1234567890abcdefghijklmnopqrstuv",
+            "[REDACTED:google-api-key]",
+        ),
+        # AWS secret-access-key half, label-guarded
+        (
+            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "[REDACTED:aws-secret-key]",
+        ),
+        # PEM block: header AND body go — the body is the secret
+        (
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7short\n-----END RSA PRIVATE KEY-----",
+            "[REDACTED:pem-private-key-block]",
+        ),
+        # Truncated PEM paste still discloses
+        (
+            "leaked: -----BEGIN OPENSSH PRIVATE KEY-----",
+            "[REDACTED:pem-private-key-header]",
+        ),
+    ]
+    for raw, expected_marker in cases:
+        text, hits = scrub_text(raw)
+        assert hits == 1, raw
+        assert expected_marker in text
+        assert raw not in text
+
+
+def test_u95_benign_prose_survives_the_new_arms() -> None:
+    """U95 (assess F7): no false positives on ordinary hyphenated prose."""
+    survivors = [
+        # F7 probe: the old sk- arm redacted this
+        "prefer the sk-learn-library-versions approach in the runner",
+        # bare 40-char base64-ish run WITHOUT an aws label guard
+        "payload digest aGVsbG8gd29ybGQgdGhpcyBpcyBhIGJhc2U2NCBibG9i",
+        # JWT-shaped prose without segment heft
+        "Authorization: Bearer a.b.c",
+    ]
+    for text in survivors:
+        clean, hits = scrub_text(text)
+        assert (clean, hits) == (text, 0), text
+    assert count_credentials("sk-learn-library-versions-v2") == 0
+
+
+def test_u95_skill_validate_publish_gate_fails_new_families(tmp_path) -> None:
+    """The graduated assess probes must fail the publish gate, not just scrub."""
+    from hermes_curator_evolver.skill_validate import validate_skill_file
+
+    poisoned = [
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4",
+        "key = AIzaSyD1234567890abcdefghijklmnopqrstuv",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----",
+    ]
+    for i, line in enumerate(poisoned):
+        skill = tmp_path / f"SKILL{i}.md"
+        skill.write_text(
+            "---\nname: poison-%d\ndescription: holds a credential\n---\n\n%s\n"
+            % (i, line),
+            encoding="utf-8",
+        )
+        # rename: validate requires SKILL.md exactly
+        target = tmp_path / f"case{i}" / "SKILL.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(skill.read_text(encoding="utf-8"), encoding="utf-8")
+        result = validate_skill_file(target)
+        assert not result["ok"], line[:40]
+        assert any("credential" in e.lower() for e in result["errors"]), line[:40]
+
+
 def test_u77_storage_scrubs_previews_and_args_before_write(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "ev.sqlite")
     store.record_tool_call(

@@ -831,3 +831,55 @@ class EvidenceStore:
             [cutoff_iso(days), limit],
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def impact_signals(
+        self, *, skill: str, days: int
+    ) -> dict[str, list[dict[str, Any]]]:
+        # Cycle-11 U87 (upstream #12): dependency-impact signals for one
+        # skill — co-usage (same-session skill pairs) and shared tools.
+        # Read-only like every reader here (U53); impact analysis is
+        # dry-run-only by contract (KTD43) and must never write, so this
+        # runs on the read connection and touches nothing else.
+        conn = self._read_connection()
+        cutoff = cutoff_iso(days)
+        co_usage = conn.execute(
+            """
+            SELECT other.skill_name AS skill,
+                   COUNT(DISTINCT other.session_id) AS shared_sessions,
+                   COALESCE(SUM(other.is_error), 0) AS error_events
+            FROM tool_events AS target
+            JOIN tool_events AS other
+              ON other.session_id IS NOT NULL
+             AND other.session_id = target.session_id
+             AND other.skill_name IS NOT NULL
+             AND other.skill_name != target.skill_name
+            WHERE target.skill_name = ?
+              AND target.created_at >= ?
+              AND other.created_at >= ?
+            GROUP BY other.skill_name
+            ORDER BY shared_sessions DESC, other.skill_name ASC
+            """,
+            [skill, cutoff, cutoff],
+        ).fetchall()
+        shared_tools = conn.execute(
+            """
+            SELECT te.skill_name AS skill,
+                   te.tool_name AS tool,
+                   COUNT(*) AS uses
+            FROM tool_events AS te
+            WHERE te.skill_name IS NOT NULL
+              AND te.skill_name != ?
+              AND te.created_at >= ?
+              AND te.tool_name IN (
+                  SELECT tool_name FROM tool_events
+                   WHERE skill_name = ? AND created_at >= ?
+              )
+            GROUP BY te.skill_name, te.tool_name
+            ORDER BY uses DESC, te.skill_name ASC, te.tool_name ASC
+            """,
+            [skill, cutoff, skill, cutoff],
+        ).fetchall()
+        return {
+            "co_usage": [dict(row) for row in co_usage],
+            "shared_tools": [dict(row) for row in shared_tools],
+        }

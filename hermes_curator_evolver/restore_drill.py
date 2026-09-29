@@ -23,6 +23,8 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
+
 from typing import Any
 
 # NOTE: guarded_apply imports this module at import time (it records drill
@@ -327,6 +329,25 @@ def _check_evidence_refs(evidence: dict[str, Any] | None) -> dict[str, Any]:
     The drill must not mutate the live evidence database — it just verifies
     references in the manifest are well-formed and the pointed-to file
     looks like an actual SQLite database when present.
+
+    U96 hardening, both halves:
+
+    * the handle is opened ``mode=ro&immutable=1`` (SQLite URI). The old
+      ``sqlite3.connect(str(path))`` open was read-write, so probing a
+      quiescent WAL-mode database materialized ``-shm``/``-wal``
+      companions and took a checkpoint on close — mutating the very
+      artifacts the drill certifies. ``mode=ro`` alone is not enough:
+      SQLite still creates the WAL sidecars for a WAL-header database
+      whenever the directory is writable. ``immutable=1`` skips them
+      entirely. The trade-off is a snapshot read — a concurrently
+      written live store may be seen slightly stale, which is exactly
+      the drill's semantics and touches nothing.
+    * ``db_path`` is trusted input only after containment (U94 parity):
+      it must resolve within the configured evidence root
+      (``paths.default_db_path().parent`` — the live store's real home,
+      honoring ``HERMES_CURATOR_EVOLVER_DB``). Anything else fails with
+      ``unsafe-db-path`` before a single byte is read — a tampered
+      manifest must not turn the drill into an arbitrary-file prober.
     """
 
     check: dict[str, Any] = {
@@ -349,8 +370,21 @@ def _check_evidence_refs(evidence: dict[str, Any] | None) -> dict[str, Any]:
         check["status"] = "warn"
         check["reason"] = "db-path-missing"
         return check
+    from .guarded_apply import _resolve_within  # local: breaks import cycle
+    from .paths import default_db_path
+
+    evidence_root = default_db_path().parent
+    if _resolve_within(path, evidence_root) is None:
+        # U94 parity: same containment discipline the rollback path applies
+        # to manifest-named backups. Refuse before opening — the drill must
+        # never become an arbitrary-file oracle for a tampered manifest.
+        check["status"] = "fail"
+        check["reason"] = "unsafe-db-path"
+        return check
     try:
-        connection = sqlite3.connect(str(path))
+        connection = sqlite3.connect(
+            f"file:{quote(str(path))}?mode=ro&immutable=1", uri=True
+        )
         try:
             connection.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
         finally:
