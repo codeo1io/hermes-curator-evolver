@@ -17,6 +17,7 @@ from .auto_evolve import (
 from .backfill import backfill_sessions
 from .candidates import mine_candidates
 from .guarded_apply import apply_guarded_patch, rollback_guarded_patch
+from .impact import build_impact_report, format_impact_json, format_impact_markdown
 from .proposals import (
     build_model_drafted_proposal,
     build_skill_proposal,
@@ -183,6 +184,17 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         help="Output format",
     )
     candidates_list.set_defaults(func=handle_cli)
+
+    impact = subs.add_parser(
+        "impact", help="Dry-run dependency impact analysis for one skill"
+    )
+    impact.add_argument("--skill", required=True, help="Skill name to analyze")
+    impact.add_argument("--days", type=int, default=30, help="Lookback window in days")
+    impact.add_argument("--skills-dir", help="Skills root (default: active Hermes home/skills)")
+    impact.add_argument(
+        "--format", choices=["markdown", "json"], default="markdown", help="Output format"
+    )
+    impact.set_defaults(func=handle_cli)
 
     apply_cmd = subs.add_parser("apply", help="Apply reviewed content with guardrails")
     apply_cmd.add_argument("--target", required=True, help="Target file to replace")
@@ -717,6 +729,31 @@ def handle_cli(args: argparse.Namespace) -> None:
         print(f"Skill events: {summary['skill_events']}")
         print(f"Error-like events: {summary['error_events']}")
         print("Mode: evidence collection + automatic low-risk evolution + guarded apply")
+        return
+
+    if command == "impact":
+        report = build_impact_report(
+            values["skill"],
+            days=_bounded_days(values.get("days"), 30),
+            skills_dir=values.get("skills_dir"),
+        )
+        if not report["skill_found"]:
+            print(
+                f"warning: skill {values['skill']!r} not found in "
+                f"{report['skills_dir']} — analyzing evidence edges only"
+            )
+        if not report.get("db_found", True):
+            # Cycle-11 review fix (finding 2): the missing store is not
+            # created (KTD43 dry-run) — say so instead of silently
+            # reporting zero session evidence.
+            print(
+                f"warning: evidence store {report['db_path']} not found — "
+                "session evidence skipped; no store created (dry-run, KTD43)"
+            )
+        if values.get("format") == "json":
+            print(format_impact_json(report))
+        else:
+            print(format_impact_markdown(report))
         return
 
     if command in {"report", "analyze"}:
