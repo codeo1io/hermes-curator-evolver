@@ -1,0 +1,4 @@
+{"step":1,"ts":"2026-09-29T20:09:01Z","summary":"ledger: unit states extracted from roadmap (U56-U104, folds+extension)","touched":[".hermes/plans/autonomy-prop_8c5390ffe26640fa.md"]}
+{"step":2,"ts":"2026-09-29T20:09:01Z","summary":"U93/U94 gates CLOSED: CI success x3 on main db9234c","touched":[]}
+{"step":3,"ts":"2026-09-29T20:09:01Z","summary":"scored 22 unresolved items; batch=U87+U95+U96+U97","touched":["/tmp/prioritize-b983684a/batch.md"]}
+{"step":4,"ts":"2026-09-29T20:09:01Z","summary":"phase_result spooled+validated; tree untouched","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/b983684a38ee4c47b6a28e67eff2d812.json"]}

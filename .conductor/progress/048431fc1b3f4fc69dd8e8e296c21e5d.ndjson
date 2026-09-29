@@ -1,0 +1,4 @@
+{"step":1,"ts":"2026-09-29T20:13:02Z","summary":"surfaces verified: hygiene/restore_drill/candidates/cli/storage anchors","touched":[]}
+{"step":2,"ts":"2026-09-29T20:13:02Z","summary":"F1 settled: no github_pat_ arm ships (md5 dcee9610 x3)","touched":[]}
+{"step":3,"ts":"2026-09-29T20:13:02Z","summary":"stewardship_request JSON written (title/surfaces/separation)","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/048431fc1b3f4fc69dd8e8e296c21e5d.json"]}
+{"step":4,"ts":"2026-09-29T20:13:02Z","summary":"companion doc + validation + breadcrumbs; tree untouched","touched":["/tmp/stewardship-048431fc/request.md"]}

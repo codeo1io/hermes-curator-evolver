@@ -1,0 +1,15 @@
+{"step":1,"ts":"2026-09-29T19:53:29Z","summary":"Router check + prior-research baseline read (docs/ideation 2026-09-23) for dedup","touched":["docs/ideation/2026-09-23-cycle-10-extension-research.md"]}
+{"step":2,"ts":"2026-09-29T19:53:29Z","summary":"Upstream drift verified: 0 behind, fork point=45328db; only open issue #12=U87 anchor","touched":["pyproject.toml","hermes_curator_evolver/backfill.py"]}
+{"step":3,"ts":"2026-09-29T19:53:29Z","summary":"Host hermes-agent drift: observer-hooks v1 + gitleaks adoption; our 3-hook subscription gap","touched":["hermes_curator_evolver/__init__.py"]}
+{"step":4,"ts":"2026-09-29T19:53:29Z","summary":"Index live 101156 (+564/6d); PR 101237 still open; deps healthy (st-floor 2 majors stale)","touched":["pyproject.toml"]}
+{"step":5,"ts":"2026-09-29T19:53:29Z","summary":"Ecosystem: SkillClaw 42d quiet; NEW same-host skillhex; SKILL.md standardizing","touched":[]}
+{"step":6,"ts":"2026-09-29T19:53:29Z","summary":"Synthesized 6 evidence-backed candidates C1-C6; report + phase_result written","touched":["/tmp/research-491ec50b/report.md","/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/491ec50b690b4aa0ba5fe0725be57d6f.json"]}
+{"step": 1, "ts": "2026-09-29T19:55:32.678419+00:00", "summary": "Router check (agent-reach only, ce-* precedent #9225); baseline doc located", "touched": ["docs/ideation/2026-09-23-cycle-10-extension-research.md"]}
+{"step": 2, "ts": "2026-09-29T19:55:32.678456+00:00", "summary": "Upstream drift: 0 new since 08-31; fork point 45328db; only open issue #12=U87 anchor", "touched": [".hermes/plans/autonomy-prop_8c5390ffe26640fa.md"]}
+{"step": 3, "ts": "2026-09-29T19:55:32.678472+00:00", "summary": "Host drift: 5 commits; observer-hooks v1 + gitleaks adoption read in full", "touched": ["/home/agent/.hermes/hermes-agent/website/docs/developer-guide/observer-hooks.md"]}
+{"step": 4, "ts": "2026-09-29T19:55:32.678483+00:00", "summary": "Ecosystem refresh: SkillClaw 42d quiet; NEW skillhex; sies; skill-maintenance-mcp; SKILL.md standard", "touched": []}
+{"step": 5, "ts": "2026-09-29T19:55:32.678492+00:00", "summary": "Index live 101,156 (+564/6d); PR #101237 still open; deps healthy; fork issues disabled", "touched": []}
+{"step": 6, "ts": "2026-09-29T19:55:32.678499+00:00", "summary": "Compat dedup: include_compacted already at backfill.py:195-205; hook gap 3/27 confirmed", "touched": ["hermes_curator_evolver/backfill.py", "hermes_curator_evolver/__init__.py"]}
+{"step": 7, "ts": "2026-09-29T19:55:32.678506+00:00", "summary": "Report written /tmp/research-491ec50b/report.md (6 candidates + not-recommended list)", "touched": ["/tmp/research-491ec50b/report.md"]}
+{"step": 8, "ts": "2026-09-29T19:55:32.678513+00:00", "summary": "phase_result JSON written+validated to infra-deploy spool", "touched": ["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/491ec50b690b4aa0ba5fe0725be57d6f.json"]}
+{"step": 9, "ts": "2026-09-29T19:56:29.115598+00:00", "summary": "Dep-gap finding added (st floor 3 majors stale, CI never installs semantic extra); artifacts patched", "touched": ["pyproject.toml", "/tmp/research-491ec50b/report.md"]}
