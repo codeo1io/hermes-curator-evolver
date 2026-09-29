@@ -834,6 +834,82 @@ def test_u86_widened_failure_vocabulary(text, expected):
     assert looks_like_error(text) is expected
 
 
+# ---------------------------------------------------------------------------
+# U97 — prose failure vocabulary, round two (cycle 11, assess F3 probe set
+# 2026-09-30). Eight canonical prose failure lines the exit-code and
+# U86 arms still classified as success: FATAL log prefixes, segfaults,
+# the curl exit prefix, errno tokens, OOM kills, bare "aborted", and
+# prose 5xx reason phrases. Every widening keeps the symmetric success
+# answers: zero-count and no-phrases for the new nouns ("0 fatal errors",
+# "no oom events"), and bare numbers never match — only the
+# number+reason-phrase pair does.
+# ---------------------------------------------------------------------------
+
+_U97_FAILURE_CASES = [
+    # assess F3 probe shapes verbatim
+    ("FATAL: exception in main()", True),
+    ("segmentation fault (core dumped)", True),
+    ("curl: (7) Failed to connect to localhost port 8080", True),
+    # cycle-11 review fix (finding 1): discriminating curl pins — the
+    # pinned shape above carries ``Failed`` and the (22) shape below
+    # carries ``error:``, so neither pins the curl arm itself; these
+    # carry NO other arm.
+    ("curl: (7) couldn't connect to host", True),
+    ("curl (7) couldn't resolve host in the deploy step", True),
+    ("curl: (0) fetched the artifact to cache", False),
+    ("connect: ECONNREFUSED", True),
+    ("Out of memory: Killed process 4321 (node)", True),
+    ("aborted", True),
+    ("500 Internal Server Error", True),
+    ("503 Service Unavailable", True),
+    # cycle-11 review fix (finding 5): the literal 5xx token is
+    # unambiguous failure vocabulary; its no/zero answers sit in the
+    # success block below.
+    ("HTTP 5xx observed in the deploy window", True),
+    # widened shapes the probes imply
+    ("segfault at 0x7f00feed rip 0x4", True),
+    ("Segmentation_Fault reported by kernel", True),
+    ("fatal: not a git repository", True),
+    ("transaction aborted by client", True),
+    ("recv: ECONNRESET", True),
+    ("connect: ETIMEDOUT after 30s", True),
+    ("No route to host (EHOSTUNREACH)", True),
+    ("bind: EADDRINUSE", True),
+    ("write failed: ENOSPC on /dev/sda1", True),
+    ("curl: (22) The requested URL returned error: 404", True),
+    ("502 Bad Gateway from upstream", True),
+    ("504 Gateway Timeout", True),
+    ("oom-killer invoked", True),
+    ({"status": "fatal"}, True),
+]
+
+_U97_SUCCESS_CASES = [
+    # zero-count and no-phrase answers for the new nouns
+    ("0 fatal errors, 12 passed", False),
+    ("no fatal errors", False),
+    ("no oom events during the run", False),
+    ("no out-of-memory conditions observed", False),
+    # bare numbers stay counts — only number+reason-phrase pairs match
+    ("triaged 1500 internal server error alerts, none live", False),
+    ("500 tickets closed, 0 failed", False),
+    # errno tokens never appear in success prose, but the joined shapes
+    # of neighboring words must not trip the arms
+    ("reconnected after a reset, all healthy", False),
+    # cycle-11 review fix (finding 5): the no/zero answers for the
+    # literal ``5xx`` arm
+    ("no 5xx responses in the window", False),
+    ("0 5xx responses recorded by the gateway", False),
+    # prior truth pins survive round two
+    ("exit code 0", False),
+    ("0 failed, exit code 1, no errors", False),
+]
+
+
+@pytest.mark.parametrize("text,expected", _U97_FAILURE_CASES + _U97_SUCCESS_CASES)
+def test_u97_prose_failure_vocabulary_round_two(text, expected):
+    assert looks_like_error(text) is expected
+
+
 def test_u86_positional_rule_survives_widened_kinds():
     # The keyword-after-success-claim rule holds for the NEW vocabulary
     # exactly as it does for ``failed``: a failure claim after the last

@@ -1,0 +1,4 @@
+{"step":1,"ts":"2026-09-29T22:31:56Z","summary":"Survey+records: HEAD db9234c, 14-entry status, run records 47a75087/d1b456e4/ca62b53d/64053dda/f048cf96 mapped; no b41f029e artifacts","touched":[]}
+{"step":2,"ts":"2026-09-29T22:31:56Z","summary":"Engine validation_digest recomputed over current tree -> 2d40d66d... == dispatch == ca62b53d == 64053dda (byte-exact)","touched":[]}
+{"step":3,"ts":"2026-09-29T22:31:56Z","summary":"Tree checks: untracked=13 ndjson+3 batch files, +1790/-13 over 13 files == PR#15 diff, zero drift vs 21:55 retest log, uv.lock absent","touched":[]}
+{"step":4,"ts":"2026-09-29T22:32:12Z","summary":"phase_result envelope written to delegate spool a0c292b5...json, JSON-validated; release-integrity scope, digest verbatim, changed_surfaces []","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/a0c292b5638a48c299b6cfc8e8384e15.json"]}
