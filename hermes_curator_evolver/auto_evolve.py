@@ -1196,6 +1196,14 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                                 drill_state_path,
                                 require=True,
                             )
+                    else:
+                        # Cycle-12 U111 (assess F8): a guarded apply that
+                        # returns without applying (refusal, hash drift,
+                        # verify failure, rolled-back patch) used to leave
+                        # the candidate at "planned" while apply_result
+                        # already told the truth — the report showed an
+                        # attempted-and-failed apply as merely planned.
+                        candidate["status"] = "apply_failed"
             candidates.append(candidate)
         except Exception as exc:  # noqa: BLE001 - per-candidate boundary
             # (roadmap U76, carried P5): one poison candidate (bad patch,
@@ -1271,6 +1279,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "applied": applied,
             "skipped": len([c for c in candidates if c.get("status") == "skipped"]),
             "failed": len([c for c in candidates if c.get("status") == "failed"]),
+            "apply_failed": len([c for c in candidates if c.get("status") == "apply_failed"]),
             "credentials_scrubbed": _scrub_stats()["scrubbed"] - scrub_before,
         },
         "candidates": candidates,
@@ -1615,6 +1624,7 @@ def format_auto_evolve_result(result: dict[str, Any], *, output_format: str) -> 
         f"- Mode: `{result['mode']}`",
         f"- Planned: {result['summary']['planned']}",
         f"- Applied: {result['summary']['applied']}",
+        f"- Apply failed: {result['summary'].get('apply_failed', 0)}",
         f"- Skipped: {result['summary']['skipped']}",
         f"- Selection: `{result.get('selection', {}).get('mode', 'unknown')}`",
         f"- Restore drill gate: `{drill_gate.get('reason', 'unknown')}` (allowed={drill_gate.get('allowed')})",
