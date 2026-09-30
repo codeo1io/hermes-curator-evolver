@@ -388,3 +388,32 @@ def test_markdown_cells_escape_pipes_and_newlines():
     # keeps exactly its 5 structural pipes once they are removed.
     assert row.count("\\|") == 2
     assert row.replace("\\|", "").count("|") == 5
+
+
+def test_co_usage_error_events_counts_distinct_rows(tmp_path):
+    """U106: error_events must count distinct error rows, not join rows.
+
+    A shared session with three target-skill rows and ONE other-skill error
+    must report error_events == 1. The pre-U106 SUM(other.is_error) counted
+    the single error once per target row (fan-out inflation: 3).
+    """
+    store = EvidenceStore(db_path=tmp_path / "ev.db")
+    sid = "sess-multi"
+    for _ in range(3):  # target-side fan-out: three target rows
+        store.record_tool_call(
+            tool_name="skill_view",
+            args={"name": "target-skill"},
+            result="ok",
+            session_id=sid,
+        )
+    store.record_tool_call(
+        tool_name="terminal",
+        args={"name": "other-skill"},
+        result={"error": "upstream timeout"},  # is_error is derived
+        session_id=sid,
+    )
+
+    evidence = store.impact_signals(skill="target-skill", days=7)
+    others = {row["skill"]: row for row in evidence["co_usage"]}
+    assert "other-skill" in others
+    assert others["other-skill"]["error_events"] == 1

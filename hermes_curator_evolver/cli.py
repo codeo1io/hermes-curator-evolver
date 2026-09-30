@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -344,7 +345,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         type=int,
         default=500,
         help="Max newest sessions to backfill (roadmap U36: bootstrap is bounded, "
-        "not full history; 0 keeps the default)",
+        "not full history; omit for the default)",
     )
     bootstrap_source = bootstrap.add_mutually_exclusive_group()
     bootstrap_source.add_argument(
@@ -409,7 +410,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         help="Legacy session_*.json directory (overrides modern state.db discovery)",
     )
     backfill.add_argument("--days", type=int, default=30, help="Only import sessions from this many days")
-    backfill.add_argument("--limit", type=int, help="Maximum number of newest sessions to inspect")
+    backfill.add_argument("--limit", type=int, help="Maximum number of newest sessions to inspect; omit for unbounded")
     backfill.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
@@ -486,14 +487,17 @@ def _bounded_days(value: int | None, default: int = 7) -> int:
 def _backfill_limit(value: int | None, default: int = 500) -> int:
     """Bound a backfill session limit (roadmap U36: bootstrap reads bounded).
 
-    ``None``/``0``/negative fall back to the caller's default instead of the
-    old ``None`` (full history for every transcript before the days cutoff
-    ran — assessment N3).
+    ``None`` falls back to the caller's default (assessment N3: bootstrap
+    stays bounded instead of full history). ``0``/negative are rejected —
+    U109 unified the zero semantics: 0 never silently means "unbounded"
+    (the old file-path behavior) or "default" (the old bootstrap behavior).
     """
 
     if value is None:
         return default
-    return max(int(value), 1) if int(value) > 0 else default
+    if int(value) <= 0:
+        raise ValueError("--limit must be a positive integer; omit it for the default")
+    return int(value)
 
 
 def _explicit_int(values: dict[str, Any], key: str, default: int) -> int:
@@ -716,8 +720,17 @@ def _format_candidates_payload(result: dict, *, output_format: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def handle_cli(args: argparse.Namespace) -> None:
-    """Dispatch CLI commands."""
+def handle_cli(args: argparse.Namespace) -> int | None:
+    """Dispatch CLI commands.
+
+    Cycle-12 U107 exit-code contract: return ``None`` for commands that
+    completed without a machine-detected failure (``main`` maps that to 0)
+    and ``1`` where the command's own verdict says it failed — verify
+    FAILED, apply/rollback refusal, restore-drill ``fail``, backfill source
+    missing or unreadable. Warning-only degradation (e.g. impact dry-run
+    on a missing skill or store, bootstrap with a missing legacy sessions
+    dir) deliberately stays 0: the command did what it was asked to do.
+    """
     values = vars(args)
     command = values.get("curator_evolver_command") or "status"
     if command == "status":
@@ -816,7 +829,8 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(f"Verifier: {status}")
             if verdict["failures"]:
                 print("Failures: " + ", ".join(verdict["failures"]))
-        return
+        # U107: a FAILED verdict must be observable in the exit status.
+        return 0 if verdict["passed"] else 1
 
     if command == "candidates-mine":
         result = _run_candidates_mine(
@@ -866,18 +880,27 @@ def handle_cli(args: argparse.Namespace) -> None:
             staged_verify=bool(values.get("staged_verify") or values.get("pre_verify_command")),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        # U107: refusal (approval-required, target-not-found, hash mismatch,
+        # verify failed) is a failure for scripting callers.
+        return 0 if result.get("applied") else 1
 
     if command == "rollback":
         allowed_roots = (values["skills_dir"],) if values.get("skills_dir") else None
-        result = rollback_guarded_patch(
-            values["manifest"],
-            force=bool(values.get("force")),
-            allowed_target_roots=allowed_roots,
-            allow_unrestricted_target=bool(values.get("allow_any_target")),
-        )
+        try:
+            result = rollback_guarded_patch(
+                values["manifest"],
+                force=bool(values.get("force")),
+                allowed_target_roots=allowed_roots,
+                allow_unrestricted_target=bool(values.get("allow_any_target")),
+            )
+        except OSError as exc:
+            # U107: a missing/unreadable manifest is an operator error —
+            # report it cleanly instead of a traceback, and fail.
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        # U107: rollback refusal (unsafe path, backup-not-found, …) fails.
+        return 0 if result.get("rolled_back") else 1
 
     if command == "auto-run":
         result = run_auto_evolve(
@@ -914,20 +937,32 @@ def handle_cli(args: argparse.Namespace) -> None:
             state_path=values.get("state_file"),
         )
         print(format_drill_report(report, output_format=values.get("format") or "json"))
-        return
+        # U107: a drill that ends in ``fail`` fails; ``skipped`` is a
+        # deliberate no-op and stays 0.
+        return 1 if report.get("status") == "fail" else 0
 
     if command == "bootstrap":
-        result = _run_bootstrap(values)
+        try:
+            result = _run_bootstrap(values)
+        except ValueError as exc:
+            # U109: --limit 0 is a contract error, reported cleanly and rc=1.
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(_format_bootstrap_result(result, output_format=values.get("format") or "text"))
         return
 
     if command == "backfill-sessions":
-        result = backfill_sessions(
-            sessions_dir=values.get("sessions_dir"),
-            state_db=values.get("state_db"),
-            days=_bounded_days(values.get("days"), 30),
-            limit=values.get("limit"),
-        )
+        try:
+            result = backfill_sessions(
+                sessions_dir=values.get("sessions_dir"),
+                state_db=values.get("state_db"),
+                days=_bounded_days(values.get("days"), 30),
+                limit=values.get("limit"),
+            )
+        except ValueError as exc:
+            # U109: --limit 0 is a contract error, reported cleanly and rc=1.
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         if values.get("format") == "json":
             print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         else:
@@ -972,7 +1007,9 @@ def handle_cli(args: argparse.Namespace) -> None:
                 print(f"Source missing: {result['source_path']}")
             if result.get("source_error"):
                 print(f"Source error: {result['source_error']}")
-        return
+        # U107: an unusable source (missing or unreadable) fails; individual
+        # session import failures are already counted in the summary.
+        return 1 if (result.get("source_error") or result.get("missing")) else 0
 
     if command == "install-auto":
         result = install_auto_timer(

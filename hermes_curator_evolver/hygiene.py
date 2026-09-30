@@ -53,7 +53,7 @@ _CREDENTIAL_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("github-app-token", re.compile(r"\bgha_[A-Za-z0-9]{36,}\b")),
     ("github-refresh-token", re.compile(r"\bghr_[A-Za-z0-9]{76}\b")),
     # Google API keys (U95): AIza prefix + 35 key characters.
-    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35,}(?![0-9A-Za-z_-])")),
     # AWS secret-access-key HALF (U95): the AKIA arm catches the public
     # id half; this catches the actually-secret half only when an aws
     # secret-key label sits within 30 chars ahead of the 40-char value —
@@ -62,7 +62,7 @@ _CREDENTIAL_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         "aws-secret-key",
         re.compile(
             r"(?i)\baws.{0,30}?secret(?:[_ ]access)?[_ ]?key\b[\"' ]*[:=][ ]?[\"']?"
-            r"[A-Za-z0-9/+=]{40}\b"
+            r"[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"
         ),
     ),
     # PEM private keys (U95): the full block first (the body IS the
@@ -107,7 +107,7 @@ _CREDENTIAL_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         # already a redaction marker. The digit requirement keeps prose
         # like "api-key: see-below" intact while catching opaque secrets.
         re.compile(
-            r"\b(?i:token|secret|password|api[_-]?key)\s*[=:]\s*(?!\[)(?=\S*\d)\S{8,}"
+            r"\b(?i:token|secret(?:[_-]?key)?|password[0-9]*|passwd|api[_-]?(?:key|token))\s*[=:]\s*(?!\[)(?=\S*\d)\S{8,}"
         ),
     ),
 )

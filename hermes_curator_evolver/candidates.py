@@ -148,7 +148,24 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     # ``failure`` deliberately stays a structured-status word only.
     # Zero/count shapes ("0 failures", "2 failures") resolve through
     # the count parses, not this arm.
-    r"|failing|failures)\b"
+    r"|failing|failures"
+    # Cycle-12 U110 (assess F5 probe set, 2026-09-30): errno-PROSE
+    # phrases — ``strerror`` text as tools actually print it. The
+    # symbolic arms above (``enospc``, ``econnrefused``, …) only see
+    # log-form constants; ``Connection refused`` / ``No space left on
+    # device`` classified as non-error. Phrases are unambiguous
+    # failure vocabulary (no success prose says them), so they widen
+    # the pattern without new zero/negation answers. ``timed out`` and
+    # ``out of memory`` already have arms and stay out.
+    r"|connection[-\s_]+(?:refused|reset(?:[-\s_]+by[-\s_]+peer)?)"
+    r"|no[-\s_]+space[-\s_]+left[-\s_]+on[-\s_]+device"
+    r"|no[-\s_]+such[-\s_]+file[-\s_]+or[-\s_]+directory"
+    r"|(?:network|host)[-\s_]+is[-\s_]+unreachable"
+    r"|name[-\s_]+or[-\s_]+service[-\s_]+not[-\s_]+known"
+    r"|temporary[-\s_]+failure[-\s_]+in[-\s_]+name[-\s_]+resolution"
+    r"|broken[-\s_]+pipe"
+    r"|read-only[-\s_]+file[-\s_]+system"
+    r"|cannot[-\s_]+allocate[-\s_]+memory)\b"
     # ``errors?:`` lives OUTSIDE the ``\b(...)\b`` group because the arm
     # ends in a non-word character (``:``): a trailing ``\b`` between
     # ``:`` and whitespace never holds (probe "ERRORS: 4 found" exposed
@@ -166,7 +183,9 @@ _FAILURE_KEYWORD_PATTERN = re.compile(
     # and without it the arm matched only inside other tools' quoting
     # (``curl (7)``). The shipped corpus pins carried other arms
     # (``Failed`` / ``error:``), so they stayed green while this arm
-    # could not see curl's own output format — tautological pins.
+    # could not see curl's own output format. The pins were therefore
+    # tautological: they re-tested arms that already matched instead of
+    # exercising the arm under review.
     r"|\bcurl[-\s_:]*\(\s*[1-9]\d*\s*\)"
     # Cycle-11 review fix (finding 5): the bare literal ``5xx`` token
     # ("HTTP 5xx observed") is unambiguous failure vocabulary — the
@@ -482,8 +501,10 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
     ``is_error`` record flag; a nonzero numeric exit status under any of
     ``exit_code``/``returncode``/``code``; a truthy ``error``/``exception``;
     ``ok``/``success`` ``False``; a ``status`` failure signal (vocabulary
-    word, 4xx/5xx number, or "NNN …" status line). A zero exit status is an explicit success (it returns before
-    the text scan), as are ``ok``/``success`` ``True`` and success-status
+    word, 4xx/5xx number, or "NNN …" status line). A zero exit status defers to the shared text scan (cycle-12
+    U110: the same text already decides the verdict for unwrapped
+    records and in-band HTTP codes, so a wrapper zero no longer flips
+    it — success-shaped text is answered False by the scan itself), as are ``ok``/``success`` ``True`` and success-status
     strings when the exit status agrees. Only when no structured signal
     decides does the keyword scan run — and it never matches a success
     report: the failure pattern requires a nonzero ``exit code``/``status``,
@@ -571,7 +592,15 @@ def _is_tool_failure(record: dict[str, Any], text: str) -> bool:
                 ):
                     continue
                 return True
-            return False
+            # Cycle-12 U110 (assess F6): a zero primary exit no longer
+            # suppresses the prose scan. The same text already decides
+            # the verdict for unwrapped records and for in-band HTTP
+            # codes ({"code": 200}); making the zero exit fall through
+            # to the shared scan removes the wrapper asymmetry while
+            # preserving every success shape — success-shaped text
+            # ("nothing failed", "0 failed") is answered False by the
+            # scan itself, exactly as it is without a wrapper.
+            return _text_bears_failure(text)
         if payload.get("ok") is True or payload.get("success") is True:
             return False
         if status_signal == "success":

@@ -1,5 +1,7 @@
 import json
 import sys
+
+import pytest
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -574,9 +576,14 @@ def test_u36_newest_first_order_is_monotonic(tmp_path, monkeypatch):
 def test_u36_bootstrap_limit_helper_bounds_bootstrap_backfill():
     from hermes_curator_evolver.cli import _backfill_limit
 
+    # U109 unified the zero semantics: None keeps the default, a positive
+    # value passes through, and 0/negative are rejected instead of silently
+    # meaning "default" (old N3 behavior) or "unbounded" (old file path).
     assert _backfill_limit(None, default=500) == 500
-    assert _backfill_limit(0, default=500) == 500  # 0 keeps the default (N3)
-    assert _backfill_limit(-3, default=500) == 500
+    with pytest.raises(ValueError, match="positive integer"):
+        _backfill_limit(0, default=500)
+    with pytest.raises(ValueError, match="positive integer"):
+        _backfill_limit(-3, default=500)
     assert _backfill_limit(7, default=500) == 7
     assert _backfill_limit(10_000, default=500) == 10_000
 
