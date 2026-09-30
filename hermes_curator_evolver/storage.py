@@ -846,7 +846,11 @@ class EvidenceStore:
             """
             SELECT other.skill_name AS skill,
                    COUNT(DISTINCT other.session_id) AS shared_sessions,
-                   COALESCE(SUM(other.is_error), 0) AS error_events
+                   -- U106 (cycle-12): count distinct error rows, not join rows —
+                   -- SUM over the fanned-out self-join multiplied every error
+                   -- event by the target side's row count.
+                   COUNT(DISTINCT CASE WHEN other.is_error THEN other.id END)
+                     AS error_events
             FROM tool_events AS target
             JOIN tool_events AS other
               ON other.session_id IS NOT NULL

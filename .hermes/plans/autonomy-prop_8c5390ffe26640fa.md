@@ -2446,3 +2446,161 @@ and independently verified by review (476 baseline + 45 new = 521: U87 9, U95 3,
 U96 2, U97 31). Tree: the
 review touched nothing (review-time worktree verified clean of review writes); this
 fold changes the 6 product files + 4 test files + README + this file.
+
+## Extension 2026-09-30 - maintenance cycle 12
+
+Cycle-12 extension, authored at the end of the cycle-2 assess and research passes (this campaign's second cycle). Ten new units (U105-U114) and three evidence-strengthening notes for standing packets; no decisions this cycle, no completion declarations. Unit count and shape: cycle-2 assess (folded attempt 234f4b1c) supplied eight probe-verified repository findings; cycle-2 research (attempt 52eb7726) supplied the upstream/standards evidence and three net-new capability candidates after the cycle-1 overlap audit (pip-audit, coverage gating, ruff-ceiling drift, gitleaks/trufflehog, OTEL stable-marker are NOT repeated here). Sibling declarations are advisory (nothing this cycle was substantively re-plan shaped).
+
+### New work packets - cycle-12 extensions
+
+- **U105 - pi session-format `custom_message` ingestion (backfill gap; assess+research C1).** backfill.py:187 imports only `type == "message"` entries. pi 0.87.1's session format (installed docs, `docs/session-format.md:62-203`) defines twelve entry types, and `CustomMessageEntry` (session-format.md:172-183, `type: "custom_message"`) is extension-injected and LLM-visible (same content shape as UserMessage) — extension-bearing sessions (subagents, ask-user) are silently invisible to the evidence corpus today. `ContextEditEntry`/`CompactionEntry` are append-only (session-format.md:137-139; raw history preserved) and must keep being skipped correctly. AC: custom_message entries import with source attribution where the entry carries it; a fixture session containing message + custom_message + context_edit + compaction entries round-trips with custom_message imported and context_edit/compaction excluded; zero flips on the existing import corpus; probes graduate from the ephemeral cycle-2 battery (`/tmp/assess-3aedb9c5/probe_battery2.py`) into pinned tests. E: import transcript + corpus diff. Standing siblings: U98 (live observer-hook capture of the same evidence class — this unit is the session-file path; no double implementation), U84 (external-format importers, identity + boundary reuse from U74/U78).
+
+- **U106 - co_usage error-event distinct count (assess F1).** storage.py:849 sums join rows, not error events: the cycle-2 probe shows 1 real error event joined against 10 target rows reported as "10 error events" (multiplicative fan-out), surfaced verbatim in the human-facing report at impact.py:251. No existing test pins a multi-row shared session. AC: error_events counts distinct error events; a multi-row shared-session pin lands; U87's dependency-aware no-write/dry-run contract (KTD43) and the AC end-to-end hash pin hold unchanged; impact report wording stays truthful under fan-out. E: probe transcript + new pin.
+
+- **U107 - CLI exit-code contract (assess F2).** `__main__.py:29` returns 0 unconditionally; probed rc 0 on verify-failure, apply-refusal, and hash-mismatch. systemd-timer and console-script consumers cannot detect failure. AC: main() propagates non-zero on every recorded failure/refusal path (verify failed, apply refused, hash mismatch, plus any refusal string the CLI already prints); exit-code table documented in README; one pin per path. E: exit-code probe transcript.
+
+- **U108 - scrub-arm tail-charset and label-boundary fixes (assess F3+F4; U95 follow-up).** hygiene.py:56/62-64 — `\b`-anchored fixed-length arms let AWS secrets ending `/`, `+`, `=` (legit base64 tails, ~3% of real keys) and Google keys with `-`/`_` tails (and the exact-{35} arm rejecting 36-char forms) escape redaction entirely; hygiene.py:104-110 — the generic label backstop needs standalone-word labels, so `SECRET_KEY=`, `API_TOKEN=`, `password1:` pass through (probed 4/4). AC: tail-charset arms and label-variant boundary added; every cycle-2 probe line redacts; zero pinned success cases flip (U86/U97 strictly-widening discipline, corpus graduation per rule); E: probe transcript + corpus run.
+
+- **U109 - `--limit 0` zero-semantics unification (assess F7).** cli.py:929 (backfill-sessions: 0 → unbounded full import) vs cli.py:486-487/577 + backfill.py:185-188 (bootstrap: 0 → default 500). Same flag, opposite semantics across import surfaces. AC: one documented zero semantics (explicit unbounded opt-in or documented default, chosen once), help text agrees on both paths, pins on both paths; E: CLI transcript.
+
+- **U110 - errno-prose arm and exit-code-0 asymmetry (assess F5+F6; U86/U97 follow-up).** candidates.py:97-125 covers errno tokens (ECONNREFUSED, …) but not prose errno forms ("Connection refused", "No space left on device"). candidates.py:556-573: exit-code-0 short-circuits the prose scan — `{"code":0,"stdout":"payment failed"}` classifies success while `{"code":200,…}` and bare prose classify failure: same failure, opposite verdicts by wrapper. AC: prose errno arm under the same strictly-widening constraints; code-0 handling made consistent (one documented decision — trust code 0 or scan prose — pinned in both directions); corpus grows one record per class; E: corpus run.
+
+- **U111 - apply-failure status transition (assess F8).** auto_evolve.py:1123/1173-1197/1270: a failed guarded apply keeps `status: "planned"` — `apply_result` records the refusal detail but the status never transitions, and the summary sums planned+applied, so failed applies are invisible at report level. AC: failed applies surface explicitly (distinct status or distinct count) in the report; pins; E: report diff.
+
+- **U112 - OTEL GenAI agent-spans export spike (research C4; spike-shaped, AC-zero-first per the U102 pattern).** OTEL semantic-conventions v1.44.0 (2026-08-04) now ships `docs/gen-ai/gen-ai-agent-spans.md` and `docs/gen-ai/mcp.md` (both `status: Development`, line 6). Cycle-1's appropriateness question stays open; this is a spike, not adoption. Deliverable: a written mapping assessment (evidence-store records → agent-span/event attributes) plus a prototype exporter behind a flag; explicit revisit trigger (next stable marker or semconv v1.45+); no data-plane change to existing surfaces. E: spike doc + prototype diff.
+
+- **U113 - GitHub Actions test-result ingestion adapter (unit D / R1 feasibility upgrade; research C12).** Carried-forward unit D (roadmap:1804+) needs suite/CI runtimes from structured histories; feasibility is now evidence-backed — `gh api` verified live from the working environment (api.github.com 200, gh CLI present, 2026-09-30), so no new credential surface is required. AC: adapter ingests CI job/test outcomes (per-suite pass/fail/duration) into the evidence store as first-class session-adjacent records; unblocks unit G's 4-element ramp; E: live ingestion transcript against this repository's own Actions history.
+
+- **U114 - pi skills discovery loadability smoke (research C3).** `pi skills list --json` verified live (returns `skills/curator-evolution` with name/description/location/user-invocable). pi load-time gate: malformed SKILL.md or missing description = skill not loaded (pi docs/skills.md) — a failure mode the repo's internal validation gates do not exercise. AC: post-apply smoke asserting each evolved skill remains discoverable with sound metadata (name and description present, no collision); smoke transcript pinned; E: smoke run. Standing sibling: U82 (spec-conformance rules — U82 governs the rule set, this governs pi's live discovery).
+
+### Evidence strengthening for standing packets (from cycle-2 research)
+
+- **U82 (skill_validate alignment with the Agent Skills standard)** — the standard is now a formal specification at https://agentskills.io/specification (frontmatter: name 1-64 lowercase alnum+hyphen, no leading/trailing/double hyphen, must match parent dir; description 1-1024 non-empty; optional compatibility <=500, metadata map, allowed-tools experimental; progressive disclosure; one-level file references) and names `skills-ref` (github.com/agentskills/agentskills, `skills-ref validate ./my-skill`) as the official reference validator. pi adopted the standard in 0.24.0 (2025-12-19; installed CHANGELOG.md:5225) with load-time enforcement, warn-but-lenient locally. U82's vendored rule set should cite the spec URL and mirror the skills-ref checks. Spec snapshot preserved at /tmp/research-52eb7726/spec.md.
+- **U98 (observer-hook evidence ingestion)** — pi's session format now defines twelve entry types including `custom_message` (LLM-visible, extension-injected). U105 (session-file path) and U98 (live-hook path) capture the same evidence class by different mechanisms; sequencing should pick one first and let the other reuse its record shape.
+- **Upstream #12 reaction check (discharged 2026-09-30)** — pingchesu/hermes-curator-evolver remains zero-drift at 45328db; issue #12 still open with no upstream activity since our 2026-09-24 answer; upstream repo has zero pull requests (no PR surface to watch). Next check folds into KTD40's ledger re-observation (~2026-10-05).
+
+### Sequencing after this extension
+
+Batch selection belongs to the prioritization phase; nothing here reorders cycle-11's designations (U98+U69 flagship pair, U83 after U87's landed dry-run, alternates U103/U88/U104). Lift-ready probes for a fast first batch: U106, U107, U108, U109, U110, U111 are all probe-verified with the cycle-2 battery preserved at /tmp/assess-3aedb9c5/probe_battery2.py (ephemeral — graduate to pins); U105 needs a session fixture; U112-U114 need new tooling. KTD40 ledger re-observation due ~2026-10-05 (streak 4/30). Next free numbering after this extension: **U115 / KTD49** (lessons continue at L56 in the cycle-12 learnings doc, per rule since cycle 8).
+
+### Artifacts and citations (cycle-2)
+
+Assess: phase_result spool `delegate/234f4b1c92864f98a61afab4b036cb35.json` (folded; earlier attempts b73fdbf7/3aedb9c5 died on provider 429s before envelope write), report /tmp/assess-234f4b1c/report.md, probe battery /tmp/assess-3aedb9c5/probe_battery2.py, baseline 529/529 at /tmp/assess-234f4b1c/fulltests/run1.log. Research: phase_result spool `delegate/52eb772666bf4a6f9cc85290d215b0fe.json`, report /tmp/research-52eb7726/report.md, spec snapshot /tmp/research-52eb7726/spec.md (earlier attempt 32f4a1a6 aborted pre-envelope). Upstream sources: pi installed package 0.87.1 (CHANGELOG.md, docs/session-format.md, docs/skills.md — local, versioned), agentskills.io/specification.md (fetched 2026-09-30), open-telemetry/semantic-conventions v1.44.0 (2026-08-04), anthropics/skills (179k stars, active 2026-09-29; watch item only, no unit).
+
+## Execution outcome 2026-09-30 - maintenance cycle 12 (compounding, pre-review)
+
+Provenance: cycle-12 batch (campaign cycle 2 of goal 134d4f57, run
+`143dfd64c9fe4bee8678d49d13a1d7e0`) implemented and validated end-to-end (assess
+`234f4b1c92864f98a61afab4b036cb35`, research `52eb772666bf4a6f9cc85290d215b0fe`,
+roadmap `72daf82012c7441ba378aca2a14165c4`, prioritize
+`f38c44ffaaf14baa86644fef20363381`, stewardship `8fdcf43e0f9c4f2da97df4bd33d70172`,
+implement `43455d65485a4c5b8d456f7c444e4d53`, targeted_tests
+`2dc57c09c6a742acb72fcb7c38f97813`, full_tests `d486adfe894847c3b4b98948dad1506d`,
+compound `13743bee0fda4b42bbb44e8c416efa9e`; seven earlier attempts across the phases
+died on the pre-envelope 429/abort class — see L59). Compounding runs BEFORE
+review/shipping: what follows is the test-evidenced state; review confirmation and the
+commit/push/pr/ci fold happen after it. Roadmap discipline unchanged: pure append onto
+the cycle-12 extension (pre-image sha256
+`dde593c92874bbb1162ef1095e2d1c9f0df2f143d474350280fcaf4723fb54da`, 2488 lines; the
+extension's text above stays byte-identical).
+
+### Implemented state (conductor worktree at aa93a57, uncommitted by design this phase)
+
+- **U106 (assess F1, P2)**: storage.py co_usage aggregation counts DISTINCT error rows —
+  `COUNT(DISTINCT CASE WHEN other.is_error THEN other.id END)` replaces the fanned-out
+  `SUM`; the single-table `SUM(is_error)` at storage.py:729 was verified NOT a fan-out
+  site. impact.py renders verbatim, so the human report is fixed at the source. Pin:
+  tests/test_impact.py::test_co_usage_error_events_counts_distinct_rows (3 target rows
+  × 1 real error → 1, was 3/10).
+- **U107 (assess F2/CLI contract)**: `main()` propagates `handle_cli`'s return; five
+  cli.py branches (verify fail, guarded-apply refusal, backfill source error, auto-run
+  failure, restore-drill failure) return 1 keyed ONLY on machine-detectable
+  result-contract tokens (`applied`/`rolled_back`, `passed`, `status=="fail"`,
+  `source_error`) — never on human-output strings. 10 pins in
+  tests/test_cli_exit_codes.py; live probe `backfill-sessions --limit 0` → rc 1.
+- **U108 (assess F3/F4, U95 follow-up)**: hygiene tails — aws 40-char value ending in
+  `/+=` no longer dies on `\b` (negative lookahead instead), Google `AIza` `{35}` →
+  `{35,}` + lookahead; label backstop vocabulary widened (`secret[_-]?key`,
+  `password[0-9]*`, `passwd`, `api key/token`). The label GUARD is preserved deliberately
+  (bare 40-char base64 in prose stays intact — pinned). 12 pins in
+  tests/test_hygiene_tail_label.py.
+- **U109 (assess F7)**: `--limit 0` unified to an explicit error everywhere (library
+  `ValueError`, CLI rc 1 with message); unbounded = omit the flag; default unchanged.
+  U36's unbounded-pin rewritten to the new contract. tests/test_backfill_limit.py +
+  test_backfill_sessions.py.
+- **U110 (assess F5/F6, U86/U97 strictly-widening)**: errno-prose vocabulary
+  (connection refused/reset, no space left, no such file, name resolution, broken pipe,
+  read-only fs, cannot allocate memory, host/network unreachable, name or service not
+  known) + zero-exit fall-through (wrapper `code:0` no longer outranks failure text;
+  success-shaped text answers False through the scan — U43/U79 precedence preserved,
+  probed before landing). N1 rider (stale docstring sentence) folded.
+  tests/test_u110_classifier_arms.py.
+- **U111 (assess F8)**: refused/rolled-back guarded applies now leave
+  `status="apply_failed"` (distinct from the exception-path "failed"), summary counts
+  `apply_failed`, markdown report line "Apply failed: N"; dry-run still reports
+  "planned". 4 pins in tests/test_u111_apply_failed.py (failing verify → rollback +
+  honest status).
+- **Verification (recorded outcomes, not re-run here)**: focused battery over 15
+  touched suites 0 failures; supplementary full suite 590 passed / 0 failed in 52.55s
+  (529 baseline + 61 new pins) — /tmp/final-sweep-43455d65.log; targeted_tests engine
+  impacted-runner exit 0, 546 outcomes over its 19-file set —
+  /tmp/targeted-2dc57c09.log; full_tests via engine full_command → ephemeral cloud-CI
+  PR #16 (commit 4fc4c518, base 20d592c): Python tests (3.12) + Lint (ruff count
+  ceiling) both SUCCESS — /tmp/fulltests-d486adfe.log. 8 batch files changed + 5 new
+  test files (+196/-40 per git diff --stat at implement close).
+
+### Packet status (test-evidenced; review fold pending)
+
+- **U106 / U107 / U108 / U109 / U110 / U111 (+ N1 rider)**: implemented and green
+  against every AC clause in the cycle-12 extension above; status flips to CLOSED only
+  at the review/reconcile gate.
+- **U105 EXCLUDED at stewardship (premise disproof — CORRECTIVE NOTE for the extension
+  above)**: the extension's U105 bullet cites "backfill.py:187 imports only
+  type=='message'"; that filter does not exist at this base (backfill.py has no
+  entry-type filter at all; line 187 is `_iter_session_files`' limit guard — canonical
+  and worktree byte-identical, 613 lines). The extension text stays byte-identical per
+  append-only discipline; THIS note is the correction. The real probe surface for a
+  future U105-class unit: the HOST pi-collector `get_messages` API (state-DB path,
+  backfill.py:246-259), the legacy `data.get("messages")` file path (:369-373), and the
+  role-based normalization loop (:417+); fixtures with `custom_message` entries already
+  exist at tests/fixtures/state_db/sessions/*.json.
+- **Deferred with reasons (from prioritize f38c44ff)**: U98+U69 flagship pair
+  (design-probe/host-contract first, KTD48 undecided), U83 → cycle-13 consuming
+  U106-corrected impact edges (dependency order), U112 spike-shaped (OTEL semconv both
+  Development), U113 needs a live-API-in-CI design decision, U114 blocked on pi absent
+  from GH runners, U103/U88/U104 ranked behind fresh probe-verified P2/P3s.
+
+### Durable lessons (compounded)
+
+Full set with prevention hooks in `docs/learnings/2026-09-30-cycle-12-compounding.md`
+(L56-L60, numbering final on main's chain). Highest-value three:
+
+1. **L56 - the delegate edit tool can report success without changing the file.** Twice
+   on hygiene.py with byte-exact anchors. Land risky multi-site edits as ONE atomic
+   python in-place edit with grep verification inside the same command; edit-tool
+   success reports are not evidence, `git diff` is.
+2. **L57 - a remembered green is not a green.** The U106/U108 pins were recorded as
+   passing in runs that could not have executed them (deterministic TypeError); the
+   phantom-era green surfaced only at the post-edit full battery. After any
+   phantom-edit discovery, re-run every suite whose green predates it; the authoritative
+   green is the last complete run after the final edit.
+3. **L59 - envelope-first is survival, not style.** Seven attempts of this run died on
+   the pre-envelope 429/abort class with completed work. Write the phase_result
+   envelope the moment the substantive result exists, then polish.
+
+### Small notes for the next cycle (13)
+
+U83 first in line (consumes U106-corrected impact edges). U98+U69 flagship stays
+design-probe-first (KTD48). U105-class ingestion probe: host pi-collector get_messages
+entry-type surface (see corrective note above). U112-U114 open as recorded. KTD40
+ledger re-observation due ~2026-10-05 (streak 4/30). Next free numbering after this
+outcome section: **U115 / KTD49 / L61**.
+
+### Artifacts and citations (cycle-12 execution)
+
+Implement/targeted/full logs: /tmp/final-sweep-43455d65.log,
+/tmp/targeted-2dc57c09.log, /tmp/fulltests-d486adfe.log (ephemeral). Learnings:
+`docs/learnings/2026-09-30-cycle-12-compounding.md` (L56-L60). Phase spools:
+delegate/43455d65…, delegate/2dc57c09…, delegate/d486adfe… (this run). Batch selection
+: /tmp/prioritize-f38c44ff/batch.md; stewardship request: /tmp/stewardship-8fdcf43e/
+request.md (ephemeral).

@@ -184,7 +184,11 @@ def _mtime(path: Path) -> float:
 
 def _iter_session_files(sessions_dir: Path, limit: int | None) -> list[Path]:
     files = sorted(sessions_dir.glob("session_*.json"), key=_mtime, reverse=True)
-    if limit is not None and limit > 0:
+    if limit is not None:
+        if limit <= 0:
+            raise ValueError(
+                "limit must be a positive integer; omit it for unbounded (roadmap U109)"
+            )
         return files[:limit]
     return files
 

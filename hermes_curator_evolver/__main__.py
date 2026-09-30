@@ -25,8 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    handle_cli(args)
-    return 0
+    # Cycle-12 U107: the exit code is wired to command outcomes. ``handle_cli``
+    # returns ``None`` for completed/successful commands and ``1`` for
+    # machine-detected failures (verify FAILED, apply refusal, rollback
+    # refusal, restore-drill fail, backfill source missing/error).
+    code = handle_cli(args)
+    return 0 if code is None else int(code)
 
 
 if __name__ == "__main__":
