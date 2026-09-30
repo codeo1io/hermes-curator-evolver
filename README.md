@@ -389,6 +389,40 @@ hermes-curator-evolver install-auto --schedule daily --enable --semantic-candida
 hermes-curator-evolver uninstall-auto
 ```
 
+## Exit codes
+
+The CLI is script-friendly: every command exits `0` when it completed without
+a machine-detected failure and `1` when its own verdict says it failed
+(U107, cycle 12; U126/U130, cycle 13). Warning-only degradation deliberately
+stays `0` — the command did what it was asked to do.
+
+Commands that can exit `1`:
+
+| Command | Exits `1` when | Stays `0` for |
+| --- | --- | --- |
+| `verify` | verdict `FAILED` (the proposal is rejected by the verifier) | verdict `PASSED` |
+| `apply` | any refusal: approval required, target missing, `--expected-sha256` drift, verify command failed, rolled back (`applied: false`) | guarded apply landed (`applied: true`) |
+| `rollback` | any refusal: unsafe path, backup missing, target drifted without `--force`; or missing/unreadable manifest (clean `error:` line) | restore completed (`rolled_back: true`) |
+| `restore-drill` | drill status `fail` (manifest problems, evidence-containment violations, restore mismatch) | `pass`, and deliberate `skip` |
+| `bootstrap` | `--limit <= 0` (contract error, clean `error:` line) | everything else, including missing legacy dumps |
+| `backfill-sessions` | `--limit <= 0` (contract error); source missing or unreadable/wrong-shape (non-database file, missing `sessions` table — clean `Source error:` line) | a completed import, even with counted per-session failures — read them in the summary counters |
+| `auto-run` | `summary.apply_failed > 0`: a guarded apply refused, hit hash drift, failed its verify command, or rolled back (U126; U111 `apply_failed` semantics) | deliberate no-ops: no candidates, dry-run all-planned, approval-required refusal, restore-drill gate skips |
+
+Everything else (`status`, `report`, `analyze`, `impact`, `candidates`,
+`candidates-mine`, `candidates-list`, `audit-skills`, `merge-check`,
+`propose`, `install-auto`, `uninstall-auto`) exits `0` on completion. Note two
+deliberate `0` contracts: `impact` stays `0` on a missing skill or store
+(warning-only dry run, KTD43), and per-session import failures inside
+`backfill-sessions` stay `0` because they are counted and disclosed in the
+summary (`sessions_failed` / `last_session_error`) rather than failing the
+whole command.
+
+```bash
+# Scriptable examples
+hermes-curator-evolver verify --proposal-file proposal.json || echo "verifier rejected it"
+hermes-curator-evolver auto-run --apply-low-risk --approve-auto-apply --verify-command 'make check' || echo "an apply failed"
+```
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, TDD expectations, PR checklist, smoke tests, and CI behavior.

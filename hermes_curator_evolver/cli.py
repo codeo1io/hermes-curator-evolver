@@ -928,7 +928,14 @@ def handle_cli(args: argparse.Namespace) -> int | None:
             )
         )
         print(format_auto_evolve_result(result, output_format=values.get("format") or "markdown"))
-        return
+        # U126 (cycle-13, assess F1; cycle-12 KNOWN LIMIT): an apply/verify
+        # failure inside auto-run must be machine-detectable — the run JSON
+        # already reports ``summary.apply_failed`` (U111 semantics: a guarded
+        # apply that refused, hit hash drift, failed verification or rolled
+        # back), but the process used to exit 0 regardless. Deliberate no-ops
+        # stay 0: no candidates, dry-run all-planned, approval-required
+        # refusal, and restore-drill gate skips.
+        return 1 if result.get("summary", {}).get("apply_failed") else 0
 
     if command == "restore-drill":
         report = run_restore_drill(
@@ -997,6 +1004,18 @@ def handle_cli(args: argparse.Namespace) -> int | None:
             # must carry the same truthful counters the JSON does.
             if result.get("tool_events_skipped_duplicate"):
                 print(f"Duplicate tool events skipped: {result['tool_events_skipped_duplicate']}")
+            # Ingestion-coverage rider (cycle-13, research addfd20c): the
+            # human summary carries the same coverage figure the JSON does —
+            # source tool messages examined vs tool events represented in
+            # the store (a dedupe skip is coverage, not a loss).
+            if result.get("tool_event_coverage_pct") is not None:
+                covered = result["tool_events_imported"] + result.get(
+                    "tool_events_skipped_duplicate", 0
+                )
+                print(
+                    f"Tool-event ingestion coverage: {result['tool_event_coverage_pct']}%"
+                    f" ({covered}/{result['source_tool_messages']} source tool messages)"
+                )
             if result.get("legacy_skipped_undecodable"):
                 print(f"Undecodable legacy files skipped: {result['legacy_skipped_undecodable']}")
             if result.get("credentials_scrubbed"):
