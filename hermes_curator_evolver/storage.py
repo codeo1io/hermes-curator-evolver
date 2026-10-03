@@ -840,6 +840,13 @@ class EvidenceStore:
         # Read-only like every reader here (U53); impact analysis is
         # dry-run-only by contract (KTD43) and must never write, so this
         # runs on the read connection and touches nothing else.
+        #
+        # U120 (cycle-13, assess F4): the hook path defaults
+        # ``session_id=""`` (hooks.on_post_tool_call), and ``IS NOT NULL``
+        # does not exclude empty strings — two skills that never truly
+        # co-occurred used to fabricate an edge off their session-less
+        # events (shared_sessions=1, error_events=1). Both sides of the
+        # join now refuse empty-string session ids.
         conn = self._read_connection()
         cutoff = cutoff_iso(days)
         co_usage = conn.execute(
@@ -854,10 +861,12 @@ class EvidenceStore:
             FROM tool_events AS target
             JOIN tool_events AS other
               ON other.session_id IS NOT NULL
+             AND other.session_id != ''
              AND other.session_id = target.session_id
              AND other.skill_name IS NOT NULL
              AND other.skill_name != target.skill_name
             WHERE target.skill_name = ?
+              AND target.session_id != ''
               AND target.created_at >= ?
               AND other.created_at >= ?
             GROUP BY other.skill_name
