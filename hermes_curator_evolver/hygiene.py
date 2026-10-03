@@ -66,12 +66,29 @@ _CREDENTIAL_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         ),
     ),
     # PEM private keys (U95): the full block first (the body IS the
-    # secret), then the BEGIN header alone for truncated pastes.
+    # secret), then the U119 truncated arm (BEGIN + body, no END), then
+    # the bare BEGIN header alone.
     (
         "pem-private-key-block",
         re.compile(
             r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
             r"(?s:.*?)-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+        ),
+    ),
+    # U119 (cycle-13, assess F3): a TRUNCATED paste (BEGIN + body, no END)
+    # used to match only the header arm below, so the marker line was
+    # redacted while the ENTIRE base64 body survived verbatim. Redact from
+    # the marker through the first blank line or end-of-input — but only
+    # when the line after the marker is real key-body material (a 20+ char
+    # base64 run), so prose that merely mentions the marker keeps its
+    # surrounding text. A paste with a proper END is already captured by
+    # the block arm above; the header arm still covers a bare marker.
+    (
+        "pem-private-key-truncated",
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\n"
+            r"(?=[A-Za-z0-9+/=]{20})"
+            r"[^\n]*(?:\n(?!\n)[^\n]*)*"
         ),
     ),
     (

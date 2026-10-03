@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -306,8 +307,11 @@ def _iter_state_sessions(
         in_window.append((session_dt, data))
     # The cap now binds the newest in-window sessions, not the storage-order
     # collection window (assessment N2/N2b/S3): the RESULT is capped, never
-    # the scan above.
-    selected = in_window if limit is None or limit <= 0 else in_window[:limit]
+    # the scan above. ``limit <= 0`` can no longer reach here — the
+    # ``backfill_sessions`` entry guard (roadmap U127) rejects it for BOTH
+    # sources with a single ValueError, where this path used to treat it as
+    # unbounded and import everything.
+    selected = in_window if limit is None else in_window[:limit]
     if stats is not None:
         # Truthful accounting (roadmap U52, assessment F24): these count
         # what actually happened during THIS scan — pages walked, distinct
@@ -392,6 +396,11 @@ def _import_session_data(
             tool_name, args = _tool_call_name_and_args(call)
             if not tool_name:
                 continue
+            # Ingestion-coverage rider (cycle-13, research addfd20c): count
+            # every source tool call eligible for storage so the summary can
+            # disclose what fraction of the examined source corpus is
+            # represented in the evidence store (live baseline ~93%).
+            result["source_tool_messages"] += 1
             call_id = _tool_call_id(call, call_index, message_index)
             task_id = f"backfill:{session_id}:{call_id}"
             if _tool_event_exists(evidence, session_id=session_id, task_id=task_id, tool_name=tool_name):
@@ -473,6 +482,23 @@ def _import_session_data(
         result["sessions_imported"] += 1
 
 
+def _disclose_coverage(result: dict[str, Any]) -> None:
+    """Attach the ingestion-coverage figure (cycle-13 rider, research addfd20c).
+
+    ``tool_event_coverage_pct`` compares the tool calls the import examined
+    in source transcripts (``source_tool_messages``) with the tool events now
+    represented in the store (imported this run + disclosed dedupe skips —
+    a skip means an earlier run already stored it). Vacuous when nothing
+    was scanned (missing/failed source): no key, no claim.
+    """
+
+    source_calls = result.get("source_tool_messages") or 0
+    if source_calls <= 0:
+        return
+    covered = result["tool_events_imported"] + result["tool_events_skipped_duplicate"]
+    result["tool_event_coverage_pct"] = round(100.0 * covered / source_calls, 1)
+
+
 def backfill_sessions(
     *,
     sessions_dir: str | Path | None = None,
@@ -488,10 +514,24 @@ def backfill_sessions(
     when that database does not exist. ``request_dump_*.json`` files are debug
     request snapshots, not the durable session transcript contract, and are
     intentionally ignored.
+
+    ``limit`` must be a positive integer when given; ``0``/negative raise
+    ``ValueError`` at entry for BOTH source kinds (roadmap U109/U127) — the
+    state-db path used to treat ``limit <= 0`` as unbounded and import the
+    whole window while recording ``result["limit"] == 0`` as if a real cap.
+    Omit ``limit`` (or pass ``None``) for unbounded.
     """
 
     if sessions_dir is not None and state_db is not None:
         raise ValueError("sessions_dir and state_db are mutually exclusive")
+    if limit is not None and int(limit) <= 0:
+        # U127 (cycle-13, assess F2; cycle-12 KNOWN LIMIT): one guard at the
+        # entry so CLI, bootstrap, legacy and state-db agree on the U109
+        # zero-semantics contract — raised before any source is opened, so
+        # a bad limit can never masquerade as "unbounded" on any path.
+        raise ValueError(
+            "limit must be a positive integer; omit it for unbounded (roadmap U109)"
+        )
 
     evidence = store or EvidenceStore()
     # Credential-scrub disclosure (roadmap U77, KTD36): the counter is the
@@ -525,6 +565,7 @@ def backfill_sessions(
         "legacy_skipped_undecodable": 0,
         "tool_events_imported": 0,
         "tool_events_skipped_duplicate": 0,
+        "source_tool_messages": 0,
         "credentials_scrubbed": 0,
         "turn_events_imported": 0,
         "session_events_imported": 0,
@@ -571,8 +612,21 @@ def backfill_sessions(
                 # wholesale abort of the import; the summary surfaces it.
                     result["sessions_failed"] += 1
                     result["last_session_error"] = f"{type(exc).__name__}: {exc}"
+        except sqlite3.DatabaseError as exc:
+            # U122 (cycle-13, assess F9): a SQLite file without a
+            # ``sessions`` table — or any non-database garbage file that
+            # passed the ``exists()`` check — is a wrong-shape SOURCE, not
+            # a crash. Classify it like every other source error so the
+            # documented backfill-source-error contract (clean message +
+            # rc 1 via the CLI) holds instead of a raw traceback. Per-
+            # session failures above stay counted separately.
+            result["files_failed"] += 1
+            result["source_error"] = f"{type(exc).__name__}: {exc}"
+            _disclose_coverage(result)
+            return result
         finally:
             session_db.close()
+        _disclose_coverage(result)
         result["credentials_scrubbed"] = _scrub_stats()["scrubbed"] - scrub_before
         return result
 
@@ -613,5 +667,6 @@ def backfill_sessions(
             result["sessions_failed"] += 1
             result["last_session_error"] = f"{path.name}: {type(exc).__name__}: {exc}"
 
+    _disclose_coverage(result)
     result["credentials_scrubbed"] = _scrub_stats()["scrubbed"] - scrub_before
     return result
