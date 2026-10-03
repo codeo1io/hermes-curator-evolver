@@ -32,10 +32,59 @@ def hermes_home() -> Path:
 
 
 def data_dir() -> Path:
-    """Return plugin data directory and create it if needed."""
-    path = hermes_home() / "plugins" / PLUGIN_NAME / "data"
+    """Return plugin data directory and create it if needed.
+
+    State lives in ``<hermes home>/plugin-data/<plugin>/``, the location Hermes
+    core reserves for plugin state. It must NOT live in ``<hermes home>/plugins/``:
+    that is the install directory, which ``hermes plugins update`` git-pulls and
+    ``hermes plugins remove`` deletes. Worse, core hashes every enabled plugin's
+    source tree to decide whether the dependency environment is still in sync
+    (``pm.workspace.members_stamp``), so writing an evidence database into the
+    install directory makes that stamp change on every turn. Dependency syncs then
+    fail with "Dependency inputs changed while preparing publication", the
+    ``source-completion-pending`` marker is never cleared, and every launch
+    re-runs a tail it can never finish.
+
+    ``plugin_data_dir`` is the supported core API for this; fall back to the same
+    path when Hermes is not importable (standalone CLI use).
+    """
+    try:
+        from plugins.plugin_storage import plugin_data_dir
+    except ImportError:
+        path = hermes_home() / "plugin-data" / PLUGIN_NAME
+    else:
+        path = plugin_data_dir(PLUGIN_NAME)
+    _check_legacy_state(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _check_legacy_state(new_dir: Path) -> None:
+    """Refuse to hide existing evidence or relocate a database under live writers.
+
+    An old gateway, CLI or timer may still have the SQLite file open. Moving its
+    DB/WAL/SHM files separately can split writers or attach another database's WAL.
+    Migration therefore requires stopped producers; see docs/after-install.md.
+    A legacy symlink already pointing at the canonical destination needs no move.
+    """
+    legacy_home = hermes_home() / "plugins" / PLUGIN_NAME
+    for name, target in (("data", new_dir), ("backups", new_dir / "backups"),
+                         ("logs", new_dir / "logs")):
+        legacy = legacy_home / name
+        if legacy.resolve() == target.resolve():
+            continue
+        # lexists includes broken operator symlinks: do not silently replace
+        # missing external evidence with a fresh, empty store.
+        if not os.path.lexists(legacy):
+            continue
+        if legacy.is_dir() and not any(legacy.iterdir()):
+            continue
+        raise RuntimeError(
+            f"Legacy curator state at {legacy} must be migrated to {target}. "
+            "Stop all curator writers (gateway, CLI and timers), back up the "
+            "state, and follow docs/after-install.md#existing-installations. "
+            "No legacy state was moved or overwritten."
+        )
 
 
 def default_db_path() -> Path:
@@ -46,3 +95,15 @@ def default_db_path() -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     return data_dir() / "evidence.sqlite"
+
+
+def default_backup_dir() -> Path:
+    """Return the default guarded-apply backup directory.
+
+    Like the evidence database, backups must stay out of the install directory:
+    ``--apply-low-risk`` runs write them, so hashing them into the dependency
+    stamp has the same failure mode as the database.
+    """
+    path = data_dir() / "backups"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
