@@ -21,9 +21,9 @@
 - evidence: CI: pytest collects the new test files and they pass
 
 ### Refresh stale top-level documentation
-- id: `rm-002` | track: reliability | priority: 43.0 | status: candidate
+- id: `rm-002` | track: reliability | priority: 43.0 | status: done
 - signals: reliability.stale_doc:README.md
 - acceptance: Docs regenerated/updated; staleness detector reports 0 signals
-- evidence: inference.stale_docs returns [] for the repo
+- evidence: inference.stale_docs returns [] for the repo; addressed 2026-10 by the README/ROADMAP reconciliation change (scrub families, exit-code table, apply_failed, milestone note) reconciled to shipped behavior at f775315+
 
 <!-- managed by hermes-roadmap render; do not edit by hand -->

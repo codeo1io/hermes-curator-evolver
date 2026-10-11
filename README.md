@@ -19,7 +19,7 @@
 [![Agents](https://img.shields.io/badge/Agents-skill%20governance-2563eb?style=flat-square)](https://github.com/pingchesu/hermes-curator-evolver)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-local%20evidence-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Safety](https://img.shields.io/badge/v0.10-bootstrap%20%2B%20safe%20autorun-22c55e?style=flat-square)](#safety-model)
+[![Safety](https://img.shields.io/badge/v0.14-audit%20%2B%20guarded%20autorun-22c55e?style=flat-square)](#safety-model)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
 
 | 📚 Session evidence | 🧠 Memory/skill candidates | 🧪 `--variants` dry-run | 🛡️ Guarded automation |
@@ -30,21 +30,14 @@
 
 ---
 
-## Latest update: variants + session mining
+## Latest update: trust-boundary docs caught up
 
-Two new reviewer-first paths are now visible up front:
+The trust-boundary documentation now matches shipped behavior:
 
-- **`auto-run --variants N`** generates up to four deterministic, model-free bounded update variants, scores them with local safety/quality signals, and selects one winner. The default remains `--variants 1`, so existing dry runs stay stable.
-- **`candidates-mine` + `candidates-list`** turns session evidence into a local SQLite review queue. It classifies findings as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` so a human can decide what should become durable memory, a skill patch, a new skill, or an evaluation case. It does not write Hermes memory, edit skills, or enable auto-apply. Credential-shaped strings in tool results are scrubbed at ingest (see [Trust boundary](#trust-boundary)).
-
-```bash
-# Compare bounded variants without writing files
-hermes-curator-evolver auto-run --skills-dir ~/.hermes/skills --variants 3 --format json
-
-# Mine session-derived evidence into a human-review queue
-hermes-curator-evolver candidates-mine --input-jsonl redacted-evidence.jsonl --queue-db curator-review.sqlite
-hermes-curator-evolver candidates-list --queue-db curator-review.sqlite --status pending --format json
-```
+- **Widened credential scrubbing** — tool-result previews, serialized arguments, and every embed point are scrubbed across the full shipped family set: GitHub token prefixes (including fine-grained `github_pat_`), Google `AIza` keys, AWS access-key IDs and label-guarded secret halves, PEM private keys, bearer JWTs, `sk-` keys, Slack tokens, and label-guarded assignments. Scrub counts are disclosed in run output. See [Trust boundary](#trust-boundary).
+- **Exit-code contract** — `verify`, `apply`, `rollback`, `restore-drill`, `bootstrap`, and `backfill-sessions` exit 1 on their documented failure surfaces so scripting callers can branch. See [Exit codes](#exit-codes).
+- **Honest autorun failure reporting** — a guarded apply that is refused or rolled back during autorun is counted as `apply_failed` in the run summary and the human report, never shown as merely planned; a failed verify command restores the backup and reports `reason: verify-failed`.
+- **Plugin data relocation** — the evidence store, review queue, and guarded-apply backups live under `~/.hermes/plugin-data/curator-evolver/`, moved out of the plugin source tree (upstream PR #27). See [Data location](#data-location).
 
 ## Contents
 
@@ -265,6 +258,8 @@ Hard defaults:
 - ✅ Apply refuses if the target SHA256 changed.
 - ✅ Apply creates a backup before writing.
 - ✅ Failed validation auto-restores the backup.
+- ✅ A guarded apply that is refused or rolled back during autorun marks that candidate `apply_failed` in the run summary and the human report — an attempted-and-failed apply is never reported as merely planned or successful.
+- ✅ A guarded apply whose verify command fails is rolled back and reported with `reason: verify-failed`.
 - ✅ `auto-run` writes only managed bounded blocks and still requires both `--apply-low-risk` and `--approve-auto-apply` before mutation.
 - ✅ Bulky autorun evidence spills into `references/` instead of growing `SKILL.md` past the tool cap; already-over-hard-cap skills are skipped. `auto-run --max-reference-files N` (default 3) bounds how many spill files one run may create; explicit numeric flags are honored as typed.
 - ✅ Out-of-range numeric options (`--days`, `--max-skills`, `--min-evidence`, `--max-reference-files`, `--variants`) are clamped to their documented bounds with a logged warning naming the old and new value — never silently rewritten.
