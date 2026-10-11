@@ -148,7 +148,7 @@ The default experience is designed to be inspectable before it is writable:
 - **Channel auto-load guard:** skills referenced by Hermes `channel_skill_bindings` are treated as high-blast-radius prompts. Autorun protects them from unattended writes by default and enforces a 12k budget even when explicitly allowlisted, so Slack-bound router skills do not grow into context-exhausting umbrellas.
 - **Source provenance gate:** official/bundled, hub-installed, plugin-provided, `skills.external_dirs`, pinned, and unknown-source skills are skipped from unattended writes.
 - **Rollback is concrete:** guarded apply records backups and manifests so you can restore exact prior content.
-- **Credential scrubbing (U77):** tool-result previews and serialized arguments are scrubbed of credential-shaped strings (GitHub/Anthropic/OpenAI/AWS/Slack tokens, generic `token=`/`password=` assignments) before storage, again at every embed point before publication, and on final validation — a skill whose content still carries a credential-shaped string fails validation and is never auto-applied. Scrub counts are disclosed in `auto-run --format json`, backfill summaries, and the human CLI output.
+- **Credential scrubbing (U77, widened U95/U108):** tool-result previews and serialized arguments are scrubbed of credential-shaped strings before storage, again at every embed point before publication, and on final validation — a skill whose content still carries a credential-shaped string fails validation and is never auto-applied. Scrubbed families: GitHub tokens (`github_pat_` fine-grained PATs; `ghp_`/`gho_`/`ghu_`/`ghs_`/`gha_`-prefixed tokens; `ghr_` refresh tokens), Google API keys (`AIza…`), AWS access-key IDs (`AKIA…`), AWS secret-access-key values, PEM private keys (full `BEGIN…END` blocks and bare `-----BEGIN … PRIVATE KEY-----` headers from truncated pastes), bearer JWTs, OpenAI/Anthropic `sk-` keys, Slack tokens (`xox…`), and generic labeled assignments (`token=`, `secret:`/`secret key:`, `password=`/`passwd`, `api key:`/`api-token:`) with opaque values. The AWS secret-half and generic-assignment arms are label-guarded: a value is redacted only when a credential label sits next to it, so ordinary prose of the same shape is preserved. Known limit: a PEM paste that contains the `BEGIN` header and key body but no `END` line has only the header line redacted — the body text survives scrubbing. Scrub counts are disclosed in `auto-run --format json`, backfill summaries, and the human CLI output.
 
 For a quick visual walkthrough, see [docs/demo-script.md](docs/demo-script.md). For synthetic output examples, see [examples/](examples/).
 
@@ -389,6 +389,21 @@ hermes-curator-evolver install-auto --schedule daily --enable --semantic-candida
 hermes-curator-evolver uninstall-auto
 ```
 
+### Exit codes
+
+These commands exit 1 on failure so scripting callers can branch:
+
+| Command | Exit 1 when |
+| --- | --- |
+| `verify` | The proposal fails the verifier verdict. |
+| `apply` | The guarded apply is refused — missing `--approve`, target not found, expected SHA256 mismatch, or verify command failed. |
+| `rollback` | The rollback is refused (unsafe target path, missing backup) or the manifest is missing/unreadable. |
+| `restore-drill` | The drill report ends in `fail` (a deliberate `skipped` drill exits 0). |
+| `bootstrap` | `--limit 0` is rejected as a contract error. |
+| `backfill-sessions` | `--limit 0` is rejected, or the evidence source is missing/unreadable. |
+
+Known limits: `auto-run` exits 0 after completing its run even when the summary reports `apply_failed` candidates (per-candidate failures are surfaced in the summary and `status`, not yet in the exit code), and passing an invalid `--state-db` to `backfill-sessions` currently raises an unhandled `sqlite3.OperationalError` instead of a clean one-line error.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, TDD expectations, PR checklist, smoke tests, and CI behavior.
@@ -503,6 +518,8 @@ publicly. For anything else, contact the maintainers through the
 - ✅ **v0.12** — deterministic `--variants N`, staged verification, and restore-drill gating for safer autorun choices.
 - ✅ **v0.13** — read-only session mining into a human-review queue for `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` decisions.
 - ✅ **v0.14** — read-only skill structure audit plus executable-capacity merge checks so large skills are reference-split and script-bearing skills are not consolidated into umbrellas that cannot preserve automation.
+
+Note: `v0.NN` labels above are capability milestones for this roadmap, not package releases. The package version is `0.10.0` (`pyproject.toml`) and no release tags exist yet; the version will move when an actual release is cut.
 
 ---
 
