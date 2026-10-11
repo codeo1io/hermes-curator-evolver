@@ -13,6 +13,14 @@ build/
 .data/
 data/
 backups/
+logs/
+# Compat symlinks left after the plugin-data migration are regular files to
+# git (mode 120000), so the trailing-slash dir patterns above do NOT match
+# them and they show as untracked noise / commit bait in every status pass.
+# Root-anchored patterns match both directories and the compat symlinks.
+/data
+/backups
+/logs
 *.sqlite
 *.sqlite-*
 
