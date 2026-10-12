@@ -19,7 +19,7 @@
 [![Agents](https://img.shields.io/badge/Agents-skill%20governance-2563eb?style=flat-square)](https://github.com/pingchesu/hermes-curator-evolver)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-local%20evidence-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Safety](https://img.shields.io/badge/v0.10-bootstrap%20%2B%20safe%20autorun-22c55e?style=flat-square)](#safety-model)
+[![Safety](https://img.shields.io/badge/safety-guarded%20apply%20%2B%20safe%20autorun-22c55e?style=flat-square)](#safety-model)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
 
 | 📚 Session evidence | 🧠 Memory/skill candidates | 🧪 `--variants` dry-run | 🛡️ Guarded automation |
@@ -30,20 +30,19 @@
 
 ---
 
-## Latest update: variants + session mining
+## Latest update: skill structure audits + merge checks
 
-Two new reviewer-first paths are now visible up front:
+Two new read-only structure checks are now visible up front:
 
-- **`auto-run --variants N`** generates up to four deterministic, model-free bounded update variants, scores them with local safety/quality signals, and selects one winner. The default remains `--variants 1`, so existing dry runs stay stable.
-- **`candidates-mine` + `candidates-list`** turns session evidence into a local SQLite review queue. It classifies findings as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` so a human can decide what should become durable memory, a skill patch, a new skill, or an evaluation case. It does not write Hermes memory, edit skills, or enable auto-apply. Credential-shaped strings in tool results are scrubbed at ingest (see [Trust boundary](#trust-boundary)).
+- **`audit-skills`** scans a skills tree for `SKILL.md` token bloat, missing `references/` files, and executable capacity. It mirrors active skill discovery (`.archive` trees are excluded unless `--include-archive`) and writes nothing.
+- **`merge-check`** previews a proposed source→umbrella skill consolidation and reports whether executable capacity survives the merge, so pruning decisions stay reviewable before any guarded apply touches a skill.
 
 ```bash
-# Compare bounded variants without writing files
-hermes-curator-evolver auto-run --skills-dir ~/.hermes/skills --variants 3 --format json
+# Audit a skills tree for bloat and broken references (read-only)
+hermes-curator-evolver audit-skills --skills-dir ~/.hermes/skills --format json
 
-# Mine session-derived evidence into a human-review queue
-hermes-curator-evolver candidates-mine --input-jsonl redacted-evidence.jsonl --queue-db curator-review.sqlite
-hermes-curator-evolver candidates-list --queue-db curator-review.sqlite --status pending --format json
+# Preview whether an umbrella merge keeps executable capacity (read-only)
+hermes-curator-evolver merge-check --source skills/sangfor-devices --target skills/infrastructure --format json
 ```
 
 ## Contents
@@ -148,7 +147,7 @@ The default experience is designed to be inspectable before it is writable:
 - **Channel auto-load guard:** skills referenced by Hermes `channel_skill_bindings` are treated as high-blast-radius prompts. Autorun protects them from unattended writes by default and enforces a 12k budget even when explicitly allowlisted, so Slack-bound router skills do not grow into context-exhausting umbrellas.
 - **Source provenance gate:** official/bundled, hub-installed, plugin-provided, `skills.external_dirs`, pinned, and unknown-source skills are skipped from unattended writes.
 - **Rollback is concrete:** guarded apply records backups and manifests so you can restore exact prior content.
-- **Credential scrubbing (U77):** tool-result previews and serialized arguments are scrubbed of credential-shaped strings (GitHub/Anthropic/OpenAI/AWS/Slack tokens, generic `token=`/`password=` assignments) before storage, again at every embed point before publication, and on final validation — a skill whose content still carries a credential-shaped string fails validation and is never auto-applied. Scrub counts are disclosed in `auto-run --format json`, backfill summaries, and the human CLI output.
+- **Credential scrubbing (U77):** tool-result previews and serialized arguments are scrubbed of credential-shaped strings before storage, again at every embed point before publication, and on final validation — a skill whose content still carries a credential-shaped string fails validation and is never auto-applied. Scrub counts are disclosed in `auto-run --format json`, backfill summaries, and the human CLI output. 16 pattern families are covered today: GitHub PAT shapes (`github_pat_`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`gha_`, exact-length `ghr_`), Google `AIza…` API keys, AWS `AKIA…` access-key ids, label-guarded AWS secret-access keys, PEM private-key blocks and truncated `BEGIN` headers, `Bearer` JWTs, `sk-` OpenAI/Anthropic keys, Slack `xox…` tokens, and generic `token=`/`secret:`/`password=`/`api_key:` assignments with an opaque value. Not covered today: opaque non-JWT bearer tokens such as `ya29.…`, credentials embedded in `postgres://user:pass@…` URLs, `api key:` labels spelled with a space, GitLab `glpat-` tokens, and bare unlabeled secret values — the label guard deliberately leaves those intact.
 
 For a quick visual walkthrough, see [docs/demo-script.md](docs/demo-script.md). For synthetic output examples, see [examples/](examples/).
 
@@ -266,7 +265,7 @@ Hard defaults:
 - ✅ Apply creates a backup before writing.
 - ✅ Failed validation auto-restores the backup.
 - ✅ `auto-run` writes only managed bounded blocks and still requires both `--apply-low-risk` and `--approve-auto-apply` before mutation.
-- ✅ Bulky autorun evidence spills into `references/` instead of growing `SKILL.md` past the tool cap; already-over-hard-cap skills are skipped. `auto-run --max-reference-files N` (default 3) bounds how many spill files one run may create; explicit numeric flags are honored as typed.
+- ✅ Bulky autorun evidence spills into `references/` instead of growing `SKILL.md` past the tool cap; already-over-hard-cap skills are skipped. `auto-run --max-reference-files N` (default 5) bounds how many spill files one run may create; explicit numeric flags are honored as typed.
 - ✅ Out-of-range numeric options (`--days`, `--max-skills`, `--min-evidence`, `--max-reference-files`, `--variants`) are clamped to their documented bounds with a logged warning naming the old and new value — never silently rewritten.
 - ✅ Even with both write flags, unattended auto-apply writes only local agent-created skills. Official/bundled skills (`.bundled_manifest`), hub-installed skills (`.hub/lock.json`), plugin-provided skills, `skills.external_dirs`, pinned skills, and unknown sources are skipped.
 - ✅ `--semantic-candidates` / `--rerank-candidates` are explicit opt-ins and only reorder skills that already passed the evidence threshold.
@@ -353,7 +352,7 @@ hermes-curator-evolver apply \
   --target ./SKILL.md \
   --content-file ./reviewed-SKILL.md \
   --expected-sha256 <current-sha256> \
-  --backup-dir .curator-evolver-backups \
+  --backup-dir ~/.hermes/plugin-data/curator-evolver/backups \
   --verify-command "python -m pytest -q" \
   --approve
 
@@ -362,17 +361,17 @@ hermes-curator-evolver apply \
 # opt in, so pass the skills root you operate on (or --allow-any-target when
 # the manifest's target legitimately lives outside it):
 hermes-curator-evolver rollback \
-  --manifest .curator-evolver-backups/<timestamp>/manifest.json \
+  --manifest ~/.hermes/plugin-data/curator-evolver/backups/<timestamp>/manifest.json \
   --skills-dir ~/.hermes/skills
 # Equivalent when the target is outside every skills root (explicit opt-in):
 hermes-curator-evolver rollback \
-  --manifest .curator-evolver-backups/<timestamp>/manifest.json \
+  --manifest ~/.hermes/plugin-data/curator-evolver/backups/<timestamp>/manifest.json \
   --allow-any-target
 # Use --force when the target changed after apply and you accept restoring over it.
 
 # Restore drill (non-destructive: replay manifest into a clean dir and report pass/fail)
-hermes-curator-evolver restore-drill --manifest .curator-evolver-backups/<timestamp>/manifest.json --format json
-hermes-curator-evolver restore-drill --manifest .curator-evolver-backups/<timestamp>/manifest.json --target-dir /tmp/drill-XYZ --format markdown
+hermes-curator-evolver restore-drill --manifest ~/.hermes/plugin-data/curator-evolver/backups/<timestamp>/manifest.json --format json
+hermes-curator-evolver restore-drill --manifest ~/.hermes/plugin-data/curator-evolver/backups/<timestamp>/manifest.json --target-dir /tmp/drill-XYZ --format markdown
 
 # Automatic evolution
 hermes-curator-evolver auto-run --skills-dir ~/.hermes/skills --format json                  # dry-run
@@ -461,7 +460,7 @@ Default:
 ~/.hermes/plugin-data/curator-evolver/evidence.sqlite
 ```
 
-Guarded-apply backups default to `~/.hermes/plugin-data/curator-evolver/backups/`.
+Guarded `apply --backup-dir` defaults to the current directory's `./.curator-evolver-backups`; `auto-run` applies default to `~/.hermes/plugin-data/curator-evolver/backups/`, and `restore-drill` follows whichever backup root the passed manifest came from.
 Existing installations must follow the [offline migration procedure](docs/after-install.md#existing-installations)
 before resuming collection; startup never moves live databases or silently starts
 an empty database in place of existing evidence.

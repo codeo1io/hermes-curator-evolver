@@ -50,7 +50,7 @@ hermes-curator-evolver apply \
   --target ~/.hermes/skills/local/my-skill/SKILL.md \
   --content-file reviewed-SKILL.md \
   --expected-sha256 <current-sha256> \
-  --backup-dir ~/.hermes/plugins/curator-evolver/backups \
+  --backup-dir ~/.hermes/plugin-data/curator-evolver/backups \
   --verify-command "python -m pytest -q" \
   --approve
 ```
