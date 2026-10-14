@@ -1,4 +1,4 @@
-"""Structural documentation pins (run 1f928624bd59 — README/ROADMAP reconciliation).
+"""Structural documentation pins (run 5f48c24b04c4 — README/ROADMAP reconciliation; supersedes the original authoring branch).
 
 These pins lock documentation claims that had drifted from shipped behavior,
 so the drift cannot silently return. They assert structural strings only —
