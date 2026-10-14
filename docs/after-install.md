@@ -183,7 +183,7 @@ Run the scheduled job immediately for a one-off smoke test on macOS/launchd:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.pingchesu.hermes-curator-evolver.auto
-tail -n 100 ~/.hermes/plugins/curator-evolver/logs/auto-run.out.log ~/.hermes/plugins/curator-evolver/logs/auto-run.err.log
+tail -n 100 ~/.hermes/plugin-data/curator-evolver/logs/auto-run.out.log ~/.hermes/plugin-data/curator-evolver/logs/auto-run.err.log
 ```
 
 ## Supported models
