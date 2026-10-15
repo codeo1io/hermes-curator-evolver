@@ -68,6 +68,7 @@ The safety rule is simple: everything before `Apply` is non-mutating; `Apply` re
 | v0.10 | None by default | One-command `bootstrap` setup and compressed quick start. | `bootstrap` backfills sessions and installs/enables the timer; `bootstrap --semantic` is explicit model opt-in. |
 | v0.11 | None | Size-bounded auto-apply preparation. | Targets a 90k `SKILL.md` soft cap, spills bulky evidence into `references/`, and skips already-over-100k skills. |
 | v0.12 | None by default | Clean-room multi-variant candidate selection and staged verification inspired by HyperAgents concepts. | `--variants N` is deterministic/model-free; `--staged-verify` runs local structural checks before optional user-supplied verify commands. No HyperAgents dependency or model-generated code execution. |
+| v0.13 | None by default | Session-content mining for memory/skill/replay candidates. | `candidates-mine` classifies redacted evidence into a local SQLite review queue and `candidates-list` presents it for human review. Read-only; never writes memory or skills. |
 | v0.14 | None | Skill structure audit and executable-capacity merge checks. | Read-only commands; no model call and no skill mutation. |
 
 Notes:
@@ -132,6 +133,11 @@ hermes-curator-evolver candidates --query "gateway restart" --skills-dir ~/.herm
 hermes-curator-evolver candidates --query "gateway restart" --skills-dir ~/.hermes/skills --execute-semantic --rerank --format json
 hermes-curator-evolver audit-skills --skills-dir ~/.hermes/skills --format json
 hermes-curator-evolver merge-check --source ~/.hermes/skills/sangfor-devices --target ~/.hermes/skills/infrastructure --format json
+# --backup-dir omitted: guarded apply then defaults to the CWD-relative
+# ./.curator-evolver-backups root, and the manifest it writes lands at
+# <backup-root>/<timestamp>/manifest.json — the path shape the rollback and
+# restore-drill invocations below consume (auto-run applies default to the
+# plugin-data backup root instead).
 hermes-curator-evolver apply --target ./SKILL.md --content-file ./reviewed-SKILL.md --expected-sha256 <sha> --approve
 hermes-curator-evolver rollback --manifest .curator-evolver-backups/<timestamp>/manifest.json
 hermes-curator-evolver restore-drill --manifest .curator-evolver-backups/<timestamp>/manifest.json --format json

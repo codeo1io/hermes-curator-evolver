@@ -241,6 +241,7 @@ flowchart LR
 | v0.11 | None | Size-bounded unattended auto-apply. | Keeps `SKILL.md` under the 100k tool cap by targeting a 90k soft cap, spilling bulky evidence into `references/`, and skipping already-over-hard-cap skills. |
 | v0.12 | None by default | Clean-room multi-variant candidate selection and staged verification inspired by HyperAgents concepts. | `--variants N` is deterministic/model-free; `--staged-verify` runs local structural checks before optional user-supplied verify commands. No HyperAgents dependency or model-generated code execution. |
 | v0.13 | None by default | Session-content mining for memory/skill/replay candidates. | `candidates-mine` classifies redacted evidence into a local SQLite review queue, then `candidates-list` lets reviewers decide whether an item should become memory, a skill update, a new skill, a replay benchmark, or be ignored. It is read-only and never writes memory or skills. |
+| v0.14 | None | Skill structure audit and executable-capacity merge checks. | `audit-skills` scans the skills tree for `SKILL.md` token bloat and missing `references/` spillover; `merge-check` previews source→umbrella consolidations and whether executable capacity survives. Read-only: no model call, no skill mutation. |
 
 ## Safety model
 
