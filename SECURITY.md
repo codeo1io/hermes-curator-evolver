@@ -21,8 +21,7 @@ impact you believe applies. We aim to respond within 7 days.
 ## Credential handling (roadmap U77)
 
 This project processes session-derived tool results that may contain
-credential-shaped strings. The pipeline defense-in-depth, as of maintenance
-cycle 9:
+credential-shaped strings. The pipeline defense-in-depth:
 
 - **At ingest** — tool-result previews (`storage._compact`) and serialized
   arguments (`storage._json_dumps`) are scrubbed of credential-shaped
@@ -39,10 +38,18 @@ cycle 9:
 
 Known limitations (honesty disclosure):
 
-- The scrubber is pattern-based (GitHub `ghp_`/`github_pat_`, Anthropic/
-  OpenAI `sk-`-family, AWS access keys, Slack tokens, generic
-  `token=`/`password=` assignments). A credential in an unusual shape can
-  still pass through; treat the pipeline as risk reduction, not a guarantee.
+- The scrubber is pattern-based. 16 pattern families are covered today:
+  GitHub PAT shapes (`github_pat_`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`gha_`,
+  exact-length `ghr_`), Google `AIza…` API keys, AWS `AKIA…` access-key
+  ids, label-guarded AWS secret-access keys, PEM private-key blocks and
+  truncated `BEGIN` headers, `Bearer` JWTs, `sk-` OpenAI/Anthropic keys,
+  Slack `xox…` tokens, and generic `token=`/`secret:`/`password=`/
+  `api_key:` assignments with an opaque value. Not covered today: opaque
+  non-JWT bearer tokens such as `ya29.…`, credentials embedded in
+  `postgres://user:pass@…` URLs, `api key:` labels spelled with a space,
+  GitLab `glpat-` tokens, and bare unlabeled secret values — the label
+  guard deliberately leaves those intact. Treat the pipeline as risk
+  reduction, not a guarantee.
 - The repository was public at the time this policy was added. GitHub
   secret scanning and push protection are enabled; a historical doc records
   one synthetic `ghp_`-shaped test token verbatim — it is annotated in place
