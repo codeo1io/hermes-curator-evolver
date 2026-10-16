@@ -1,4 +1,5 @@
-"""Structural documentation pins (run 1f928624bd59 — README/ROADMAP reconciliation).
+"""Structural documentation pins (run 1f928624bd59 — README/ROADMAP reconciliation;
+extended by run 43954f0e7908 — residual docs reconciliation).
 
 These pins lock documentation claims that had drifted from shipped behavior,
 so the drift cannot silently return. They assert structural strings only —
@@ -15,6 +16,10 @@ Truths locked at introduction:
 - State never lives in the ``~/.hermes/plugins/curator-evolver/`` install
   tree (logs/backups moved to ``~/.hermes/plugin-data/curator-evolver/``).
 - ``plugin.yaml`` provides exactly the tool the README names.
+- The README and ``docs/architecture.md`` model-usage tables carry the
+  same set of version rows.
+- The credential-scrubbing "not covered today" markers stay disclosed in
+  both README.md and SECURITY.md.
 """
 
 import argparse
@@ -90,3 +95,40 @@ def test_pin4_plugin_provided_tool_named_in_readme():
     readme = _read(REPO_ROOT / "README.md")
     for tool in tools:
         assert tool in readme
+
+
+def _model_usage_versions(text: str) -> set:
+    section = text.split("## Model usage plan", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    return set(re.findall(r"^\|\s*(v[\d./]+)\s*\|", section, re.MULTILINE))
+
+
+def test_pin5_model_usage_version_rows_match_across_docs():
+    readme_versions = _model_usage_versions(_read(REPO_ROOT / "README.md"))
+    architecture_versions = _model_usage_versions(
+        _read(REPO_ROOT / "docs" / "architecture.md")
+    )
+    assert readme_versions == architecture_versions, (
+        "Model-usage version rows drifted between README.md and "
+        "docs/architecture.md: "
+        f"README-only={sorted(readme_versions - architecture_versions)}, "
+        f"architecture-only={sorted(architecture_versions - readme_versions)}"
+    )
+
+
+NOT_COVERED_MARKERS = (
+    "ya29.",
+    "postgres://user:pass@",
+    "api key:",
+    "glpat-",
+)
+
+
+def test_pin6_scrub_not_covered_markers_disclosed_in_readme_and_security():
+    for name in ("README.md", "SECURITY.md"):
+        text = _read(REPO_ROOT / name)
+        missing = [marker for marker in NOT_COVERED_MARKERS if marker not in text]
+        assert missing == [], (
+            f"{name} no longer discloses the credential-scrubbing "
+            f"not-covered markers: {missing}"
+        )
